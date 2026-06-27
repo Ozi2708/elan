@@ -1,20 +1,10 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
+/* Point d'entrée Vite — ordre d'exécution important :
+   1. react-setup : window.React / window.ReactDOM
+   2. styles
+   3. données (window.ED_SESSIONS, ED_STRETCH, ED_GYM, ED_WEEK)
+   4. app : normalisation + moteur IA + composants + App + render */
+import './react-setup.js';
 import './index.css';
-import App from './App.jsx';
-
-const root = createRoot(document.getElementById('root'));
-root.render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
-
-// Hide splash after app mounts
-const splash = document.getElementById('splash');
-if (splash) {
-  setTimeout(() => {
-    splash.classList.add('hide');
-    setTimeout(() => splash.remove(), 600);
-  }, 1200);
-}
+import './data/exercises-data.js';
+import './data/exercises-extra.js';
+import './app.jsx';
