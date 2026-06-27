@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Élan</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="élan">
+  <meta name="theme-color" content="#2FBFA1">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><defs><linearGradient id='g' x1='0' y1='0' x2='120' y2='120' gradientUnits='userSpaceOnUse'><stop offset='0' stop-color='%232FBFA1'/><stop offset='1' stop-color='%230B8071'/></linearGradient><radialGradient id='s' cx='.5' cy='.5' r='.5'><stop offset='0' stop-color='%23FFD9C7'/><stop offset='1' stop-color='%23F2602E'/></radialGradient></defs><rect width='120' height='120' rx='30' fill='url(%23g)'/><path d='M30 86 L54 64 L78 44' stroke='%23fff' stroke-width='7' stroke-linecap='round' stroke-linejoin='round' fill='none'/><circle cx='30' cy='86' r='7.5' fill='%23fff'/><circle cx='54' cy='64' r='8.5' fill='%23fff'/><circle cx='84' cy='38' r='13' fill='url(%23s)'/><circle cx='84' cy='38' r='13' fill='none' stroke='%23fff' stroke-width='3.5'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="root"></div>
+  <div id="splash">
+    <div class="splash-inner">
+      <svg width="92" height="92" viewBox="0 0 120 120">
+        <defs>
+          <linearGradient id="spBg" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#2FBFA1"/>
+            <stop offset="1" stop-color="#0B8071"/>
+          </linearGradient>
+          <radialGradient id="spSpark" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0" stop-color="#FFD9C7"/>
+            <stop offset="1" stop-color="#F2602E"/>
+          </radialGradient>
+        </defs>
+        <rect width="120" height="120" rx="30" fill="url(#spBg)"/>
+        <path d="M30 86 L54 64 L78 44" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.95"/>
+        <circle cx="30" cy="86" r="7.5" fill="#fff" opacity="0.92"/>
+        <circle cx="54" cy="64" r="8.5" fill="#fff"/>
+        <circle cx="84" cy="38" r="13" fill="url(#spSpark)"/>
+        <circle cx="84" cy="38" r="13" fill="none" stroke="#fff" stroke-width="3.5"/>
+      </svg>
+      <div class="splash-word">él<span>a</span>n</div>
+      <div class="splash-dots"><i></i><i></i><i></i></div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
