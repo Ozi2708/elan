@@ -398,8 +398,12 @@ window.__toggleBilanHidden=function(month,key,hide){
 };
 /* ─── Test d'entrée : effacement (pour le refaire) ─── */
 window.__clearBaseline=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline'); }catch(e){} };
+/* ─── Test d'entrée : « plus tard » mémorisé (sinon il se relance à chaque ouverture) ─── */
+window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStorage.getItem('elan_baseline_skip'))==='1'; }catch(e){ return false; } };
+window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
+window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month'];
 window.__resetAllData=function(){ try{ if(window.localStorage) window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
@@ -3120,7 +3124,7 @@ function App() {
   const [showBilan,setShowBilan]=React.useState(false);
   const [bilanDone,setBilanDone]=React.useState(()=>window.__bilanDoneThisMonth());
   const [baselineDone,setBaselineDone]=React.useState(()=>window.__hasBaseline());
-  const [skipBaseline,setSkipBaseline]=React.useState(false);
+  const [skipBaseline,setSkipBaseline]=React.useState(()=>window.__baselineSkipped());
   const [recap,setRecap]=React.useState(()=>window.__recapDue());
   const closeRecap=()=>{ if(recap) window.__markRecapSeen(recap.kind,recap.key); setRecap(null); };
   const showReminder=t.dailyReminder&&checkedIn&&!started&&!window.__sessionDoneToday();
@@ -3140,7 +3144,7 @@ function App() {
   const sessionProps={ session:{mode:sessionMode,goals:customGoals,intensity:customIntensity,gymId}, setSession:{setMode:setSessionMode,setGoals:setCustomGoals,setIntensity:setCustomIntensity,setGymId} };
   return (
     <>
-      {!baselineDone&&!skipBaseline&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:220,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanInitial onDone={()=>setBaselineDone(true)} onSkip={()=>setSkipBaseline(true)}/></div>)}
+      {!baselineDone&&!skipBaseline&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:220,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanInitial onDone={()=>setBaselineDone(true)} onSkip={()=>{window.__markBaselineSkipped();setSkipBaseline(true);}}/></div>)}
       {!checkedIn&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:200,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
@@ -3148,7 +3152,7 @@ function App() {
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 100}}>
         <div key={tab+String(started)} className="screen-in">
           {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder)?'24px 24px 0':0}}>{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} {...sessionProps}/></>)}
-          {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
+          {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
         </div>

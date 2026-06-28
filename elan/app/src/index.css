@@ -1,17 +1,30 @@
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
   body {
     background: #D7E4E0;
     min-height: 100vh;
     display: flex; align-items: center; justify-content: center;
     font-family: 'DM Sans', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    /* pas de carré de sélection au tap / double-tap — sensation d'app native */
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   }
+  /* on laisse la sélection possible là où elle est utile (saisie) */
+  input, textarea, [contenteditable] { user-select: text; -webkit-user-select: text; }
+  button { -webkit-tap-highlight-color: transparent; outline: none; }
+  button::-moz-focus-inner { border: 0; }
   #root {
     width: 390px; height: 100vh; max-height: 844px;
     background: #F4F8F7;
     overflow: hidden; position: relative;
     display: flex; flex-direction: column;
     box-shadow: 0 0 80px rgba(14,81,74,0.10), 0 24px 60px rgba(14,81,74,0.20);
+  }
+  /* Vrai téléphone : l'app occupe toute la largeur/hauteur — plus de bandes sage sur les côtés.
+     Sur grand écran (desktop) on conserve le cadre « téléphone » centré de 390px. */
+  @media (max-width: 480px) {
+    body { background: #F4F8F7; align-items: stretch; }
+    #root { width: 100%; max-width: none; height: 100vh; height: 100dvh; max-height: none; box-shadow: none; }
   }
   .scroll { flex:1; overflow-y:auto; overscroll-behavior:contain; }
   .scroll::-webkit-scrollbar { display:none; }
@@ -29,6 +42,7 @@
   @keyframes barGrow { from { transform:scaleX(0);} to { transform:scaleX(1);} }
   /* ── Splash de lancement ── */
   #splash { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); width:390px; height:100vh; max-height:844px; background:#F4F8F7; display:flex; align-items:center; justify-content:center; z-index:9999; transition:opacity .5s ease; }
+  @media (max-width: 480px) { #splash { width:100%; height:100vh; height:100dvh; max-height:none; } }
   #splash.hide { opacity:0; pointer-events:none; }
   .splash-inner { display:flex; flex-direction:column; align-items:center; gap:20px; animation:splashIn 560ms cubic-bezier(.22,1,.36,1); }
   #splash svg { filter:drop-shadow(0 14px 30px rgba(11,128,113,.34)); }
