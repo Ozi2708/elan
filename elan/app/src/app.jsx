@@ -954,7 +954,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       </div>
     );
   }
-  function CheckIn({ metrics, setMetrics, context, setContext, onConfirm }) {
+  function CheckIn({ metrics, setMetrics, context, setContext, onConfirm, onClose }) {
     const set=(k,v)=>setMetrics(m=>({...m,[k]:v}));
     const toggle=id=>setContext(c=>{let eq=c.equipment.includes(id)?c.equipment.filter(x=>x!==id):[...c.equipment,id];if(!eq.length)eq=['bodyweight'];return{...c,equipment:eq};});
     const ready=!!metrics.energy;
@@ -963,7 +963,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       <div style={{minHeight:'100%',padding:'0 24px 40px'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 0 0',marginBottom:22}}>
           <span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.muted}}>{new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
-          <BrandMark/>
+          {onClose?<button onClick={onClose} aria-label="Fermer" style={{background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:99,width:34,height:34,cursor:'pointer',color:C.body,fontSize:19,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'DM Sans',sans-serif"}}>×</button>:<BrandMark/>}
         </div>
         <div style={{marginBottom:24}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:6}}>Check-in du jour</p>
@@ -990,8 +990,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <button key={e.id} onClick={()=>toggle(e.id)} style={{padding:'8px 14px',borderRadius:99,cursor:'pointer',fontSize:13,fontWeight:500,fontFamily:"'DM Sans',sans-serif",background:a?'rgba(47,191,161,0.12)':C.bg,border:`1px solid ${a?'rgba(47,191,161,0.4)':C.line}`,color:a?C.tealDk:C.muted,transition:'all 160ms ease'}}>{a?'✓ ':''}{e.label}</button>);})}
           </div>
         </div>
-        <Btn variant={metrics.energy>=8?'energy':'primary'} size="lg" fullWidth disabled={!ready} onClick={ready?onConfirm:undefined}>{ready?'Générer mon programme →':'Choisis ton énergie'}</Btn>
-        <p style={{textAlign:'center',marginTop:14,fontSize:12,color:C.faint,lineHeight:1.5}}>Élan adapte ta séance à ta forme et à ton matériel.</p>
+        <Btn variant={metrics.energy>=8?'energy':'primary'} size="lg" fullWidth disabled={!ready} onClick={ready?onConfirm:undefined}>{ready?(onClose?'Mettre à jour ma forme →':'Générer mon programme →'):'Choisis ton énergie'}</Btn>
+        <p style={{textAlign:'center',marginTop:14,fontSize:12,color:C.faint,lineHeight:1.5}}>{onClose?'Tu peux refaire ton check-in si ta forme a changé depuis ce matin.':'Élan adapte ta séance à ta forme et à ton matériel.'}</p>
       </div>
     );
   }
@@ -1064,7 +1064,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
 
-  function CheckInHybride({ metrics, setMetrics, context, setContext, onConfirm }) {
+  function CheckInHybride({ metrics, setMetrics, context, setContext, onConfirm, onClose }) {
     const set=(k,v)=>setMetrics(m=>({...m,[k]:v}));
     const toggle=id=>setContext(c=>{let eq=c.equipment.includes(id)?c.equipment.filter(x=>x!==id):[...c.equipment,id];if(!eq.length)eq=['bodyweight'];return{...c,equipment:eq};});
     const [weather,setWeather]=React.useState({status:'load'});
@@ -1122,7 +1122,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       <div style={{minHeight:'100%',padding:'0 24px 40px'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 0 0',marginBottom:22}}>
           <span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.muted}}>{new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
-          <BrandMark/>
+          {onClose?<button onClick={onClose} aria-label="Fermer" style={{background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:99,width:34,height:34,cursor:'pointer',color:C.body,fontSize:19,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'DM Sans',sans-serif"}}>×</button>:<BrandMark/>}
         </div>
         <div style={{marginBottom:22}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:6}}>Check-in du jour</p>
@@ -1231,8 +1231,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <button key={e.id} onClick={()=>toggle(e.id)} style={{padding:'8px 14px',borderRadius:99,cursor:'pointer',fontSize:13,fontWeight:500,fontFamily:"'DM Sans',sans-serif",background:a?'rgba(47,191,161,0.12)':C.bg,border:`1px solid ${a?'rgba(47,191,161,0.4)':C.line}`,color:a?C.tealDk:C.muted,transition:'all 160ms ease'}}>{a?'✓ ':''}{e.label}</button>);})}
           </div>
         </div>
-        <Btn variant={metrics.energy>=8?'energy':'primary'} size="lg" fullWidth disabled={!ready} onClick={ready?onConfirm:undefined}>{ready?'Générer mon programme →':'Fais le test ou indique ton énergie'}</Btn>
-        <p style={{textAlign:'center',marginTop:14,fontSize:12,color:C.faint,lineHeight:1.5}}>Ta forme du jour combine mesures (réflexes, météo, lever de chaise) et ressenti.</p>
+        <Btn variant={metrics.energy>=8?'energy':'primary'} size="lg" fullWidth disabled={!ready} onClick={ready?onConfirm:undefined}>{ready?(onClose?'Mettre à jour ma forme →':'Générer mon programme →'):'Fais le test ou indique ton énergie'}</Btn>
+        <p style={{textAlign:'center',marginTop:14,fontSize:12,color:C.faint,lineHeight:1.5}}>{onClose?'Refais le test si ta forme a changé depuis ce matin.':'Ta forme du jour combine mesures (réflexes, météo, lever de chaise) et ressenti.'}</p>
       </div>
     );
   }
@@ -1294,7 +1294,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               </div>
             </div>);
   }
-  function ProgramScreen({ program, onStart, session, setSession }) {
+  function ProgramScreen({ program, onStart, session, setSession, onReviewCheckin }) {
     const spec=ex=>ex.doseText||ex.duration||'';
     const resume=window.__resumableSession();
     const [open,setOpen]=React.useState(null);
@@ -1319,10 +1319,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           </div>
         )}
         <div style={{display:'flex',gap:12,marginBottom:18}}>
-          <div style={{flex:'0 0 auto',width:96,background:C.card,border:`1px solid ${rc}44`,borderRadius:18,padding:'14px 10px',textAlign:'center',boxShadow:C.sh}}>
+          <button onClick={onReviewCheckin} aria-label="Revoir le check-in du jour" style={{flex:'0 0 auto',width:96,background:C.card,border:`1px solid ${rc}44`,borderRadius:18,padding:'12px 10px 10px',textAlign:'center',boxShadow:C.sh,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",display:'block'}}>
             <div style={{fontFamily:"'DM Mono',monospace",fontSize:30,fontWeight:500,color:rc,lineHeight:1}}>{r}</div>
             <div style={{fontSize:10,color:C.muted,marginTop:4,letterSpacing:'0.04em'}}>FORME / 100</div>
-          </div>
+            <div style={{fontSize:9.5,color:C.tealDk,marginTop:5,fontWeight:600,letterSpacing:'0.02em'}}>Revoir ›</div>
+          </button>
           <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',gap:8}}>
             <div style={{display:'flex',gap:8}}>
               <span style={{...meta,flex:1}}><span style={{display:'block',fontSize:10,color:C.muted,marginBottom:2}}>Durée</span><span style={{fontFamily:"'DM Mono',monospace",fontSize:15,color:C.ink}}>{program.duration} min</span></span>
@@ -3127,6 +3128,10 @@ function App() {
   const [skipBaseline,setSkipBaseline]=React.useState(()=>window.__baselineSkipped());
   const [recap,setRecap]=React.useState(()=>window.__recapDue());
   const closeRecap=()=>{ if(recap) window.__markRecapSeen(recap.kind,recap.key); setRecap(null); };
+  /* Revoir / refaire le check-in du jour depuis l'accueil (clic sur le score de forme).
+     Fermer sans valider restaure les valeurs enregistrées le matin. */
+  const [reviewCheckin,setReviewCheckin]=React.useState(false);
+  const closeReview=()=>{ const c=window.__readCheckin(); if(c&&c.metrics) setMetrics(c.metrics); setReviewCheckin(false); };
   const showReminder=t.dailyReminder&&checkedIn&&!started&&!window.__sessionDoneToday();
   const showBilanReminder=checkedIn&&!started&&window.__bilanReminderDue()&&!bilanDone;
   /* ── Geste « retour » (Android / navigateur) : ferme l'écran courant au lieu de quitter l'app ──
@@ -3135,9 +3140,9 @@ function App() {
      popstate pour fermer l'overlay/la séance ou revenir à l'accueil. À la racine (accueil, rien
      d'ouvert), on laisse le retour quitter l'app, comme partout ailleurs sur Android. */
   const onboarding=(!baselineDone&&!skipBaseline)||!checkedIn;
-  const canGoBack=!!(recap||started||showBilan||onboarding||tab!=='today');
+  const canGoBack=!!(recap||reviewCheckin||started||showBilan||onboarding||tab!=='today');
   const navRef=React.useRef({});
-  navRef.current={ recap, started, showBilan, onboarding, tab, closeRecap, setStarted, setShowBilan, setTab };
+  navRef.current={ recap, reviewCheckin, started, showBilan, onboarding, tab, closeRecap, closeReview, setStarted, setShowBilan, setTab };
   const armedRef=React.useRef(false);
   const canBackRef=React.useRef(canGoBack); canBackRef.current=canGoBack;
   React.useEffect(()=>{
@@ -3149,6 +3154,7 @@ function App() {
       if(!canBackRef.current) return;          // rien à fermer : on laisse le retour quitter l'app
       const n=navRef.current; armedRef.current=false; // sentinelle consommée par ce retour
       if(n.recap) n.closeRecap();
+      else if(n.reviewCheckin) n.closeReview();
       else if(n.started) n.setStarted(false);
       else if(n.showBilan) n.setShowBilan(false);
       else if(n.onboarding){ try{ window.history.pushState({elan:1},''); }catch(e){} armedRef.current=true; } // étape requise : on reste
@@ -3174,12 +3180,13 @@ function App() {
     <>
       {!baselineDone&&!skipBaseline&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:220,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanInitial onDone={()=>setBaselineDone(true)} onSkip={()=>{window.__markBaselineSkipped();setSkipBaseline(true);}}/></div>)}
       {!checkedIn&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:200,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>}</div>)}
+      {checkedIn&&reviewCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:205,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
       {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 100}}>
         <div key={tab+String(started)} className="screen-in">
-          {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder)?'24px 24px 0':0}}>{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} {...sessionProps}/></>)}
+          {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder)?'24px 24px 0':0}}>{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
