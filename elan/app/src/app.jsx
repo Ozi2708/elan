@@ -3129,6 +3129,34 @@ function App() {
   const closeRecap=()=>{ if(recap) window.__markRecapSeen(recap.kind,recap.key); setRecap(null); };
   const showReminder=t.dailyReminder&&checkedIn&&!started&&!window.__sessionDoneToday();
   const showBilanReminder=checkedIn&&!started&&window.__bilanReminderDue()&&!bilanDone;
+  /* ── Geste « retour » (Android / navigateur) : ferme l'écran courant au lieu de quitter l'app ──
+     L'app est en page unique : sans cette intégration, le retour système sort de l'appli. On garde
+     une entrée d'historique « sentinelle » tant qu'il y a quelque chose à fermer, et on intercepte
+     popstate pour fermer l'overlay/la séance ou revenir à l'accueil. À la racine (accueil, rien
+     d'ouvert), on laisse le retour quitter l'app, comme partout ailleurs sur Android. */
+  const onboarding=(!baselineDone&&!skipBaseline)||!checkedIn;
+  const canGoBack=!!(recap||started||showBilan||onboarding||tab!=='today');
+  const navRef=React.useRef({});
+  navRef.current={ recap, started, showBilan, onboarding, tab, closeRecap, setStarted, setShowBilan, setTab };
+  const armedRef=React.useRef(false);
+  const canBackRef=React.useRef(canGoBack); canBackRef.current=canGoBack;
+  React.useEffect(()=>{
+    if(canGoBack&&!armedRef.current){ try{ window.history.pushState({elan:1},''); }catch(e){} armedRef.current=true; }
+    else if(!canGoBack){ armedRef.current=false; }
+  },[canGoBack]);
+  React.useEffect(()=>{
+    const onPop=()=>{
+      if(!canBackRef.current) return;          // rien à fermer : on laisse le retour quitter l'app
+      const n=navRef.current; armedRef.current=false; // sentinelle consommée par ce retour
+      if(n.recap) n.closeRecap();
+      else if(n.started) n.setStarted(false);
+      else if(n.showBilan) n.setShowBilan(false);
+      else if(n.onboarding){ try{ window.history.pushState({elan:1},''); }catch(e){} armedRef.current=true; } // étape requise : on reste
+      else if(n.tab!=='today') n.setTab('today');
+    };
+    window.addEventListener('popstate',onPop);
+    return ()=>window.removeEventListener('popstate',onPop);
+  },[]);
   const [sessionMode,setSessionMode]=React.useState('ia');
   const [customGoals,setCustomGoals]=React.useState(['lower','balance']);
   const [customIntensity,setCustomIntensity]=React.useState('moderee');
