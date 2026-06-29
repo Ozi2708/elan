@@ -30,8 +30,10 @@
   .scroll::-webkit-scrollbar { display:none; }
   .scroll { -ms-overflow-style:none; scrollbar-width:none; }
   /* marge basse = zone sûre (barre gestuelle Android / indicateur d'accueil iPhone) en PWA plein écran.
+     Android (surtout nav. gestuelle) renvoie souvent env(safe-area-inset-bottom)=0 même en viewport-fit=cover ;
+     on garde donc un plancher de 22px pour que le bouton ne passe jamais sous la barre système.
      Les écrans superposés (test d'entrée, check-in, bilan) ne fixent pas paddingBottom → ce padding s'applique. */
-  .scroll { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .scroll { padding-bottom: max(env(safe-area-inset-bottom, 0px), 22px); }
   .hidescroll { -ms-overflow-style:none; scrollbar-width:none; }
   .hidescroll::-webkit-scrollbar { display:none; }
   @keyframes tapPulse { 0%{transform:scale(1);} 50%{transform:scale(0.97);} 100%{transform:scale(1);} }
