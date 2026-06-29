@@ -314,6 +314,21 @@ window.__weekDoneCount=function(){
 window.__isoWeekKey=function(dt){ const d=dt?new Date(dt):new Date(); const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day); const ys=new Date(Date.UTC(t.getUTCFullYear(),0,1)); const wk=Math.ceil((((t-ys)/86400000)+1)/7); return t.getUTCFullYear()+'-W'+wk; };
 window.__dorsiWeekCount=function(){ const wk=window.__isoWeekKey(); return window.__sessHistory().filter(e=>e.dorsi && window.__isoWeekKey(e.date)===wk).length; };
 window.__DORSI_PER_WEEK=2;
+/* Faut-il travailler le releveur du pied aujourd'hui ? Cible 2×/semaine, RÉPARTIES :
+   - 1re séance dorsi de la semaine : dès que possible ;
+   - 2e : on espace d'au moins 2 jours pour récupérer, mais on la force en fin de semaine
+     (à partir de vendredi) pour ne jamais rater le minimum hebdo. */
+window.__dorsiDueToday=function(){
+  const wk=window.__isoWeekKey(); const hist=window.__sessHistory();
+  const thisWeek=hist.filter(e=>e.dorsi && window.__isoWeekKey(e.date)===wk);
+  if(thisWeek.length>=window.__DORSI_PER_WEEK) return false;
+  if(thisWeek.length===0) return true;
+  const dates=hist.filter(e=>e.dorsi).map(e=>e.date).sort();
+  const last=dates[dates.length-1];
+  const gap=last?Math.round((Date.now()-new Date(last).getTime())/86400000):99;
+  const isoDow=(new Date().getUTCDay()||7);   // 1=lundi … 7=dimanche
+  return gap>=2 || isoDow>=5;                  // espacé OU forcé en fin de semaine
+};
 window.__bestStreak=function(){
   const days=[...new Set(window.__sessHistory().map(e=>e.date))].sort();
   if(!days.length) return 0;
@@ -523,81 +538,96 @@ function __sessionDuration(exs){ return Math.max(5, Math.round(exs.reduce((s,e)=
 const __PHASE={warmup:0,main:1,cooldown:2};
 function __ordered(exs){ return exs.map((e,i)=>[e,i]).sort((a,b)=>(__PHASE[a[0].phase]-__PHASE[b[0].phase])||(a[1]-b[1])).map(x=>x[0]); }
 
-/* ═══ SÉANCE DU JOUR — sélection d'une séance kiné selon l'état (énergie / fatigue / chaleur / sommeil) ═══ */
+/* ═══ SÉANCE DU JOUR — l'IA COMPOSE la séance exercice par exercice ═══
+   À partir du pool d'exercices disponibles (selon le matériel), l'IA bâtit chaque jour une séance :
+   elle choisit les ZONES à travailler (couverture du corps + récence), pioche dans chaque zone
+   les exercices les MOINS récemment faits (variété / « pas les derniers exos »), module le volume
+   selon la forme du jour, et garde une structure en blocs (échauffement → travail groupé par zone →
+   retour au calme). La progression par exercice est conservée (__mapExercise / __exLevel). */
+const __ZONE_LABEL={lower:'Bas du corps',upper:'Haut du corps',core:'Gainage & tronc',balance:'Équilibre',proprioception:'Proprioception',cardio:'Cardio',stretching:'Mobilité'};
+const __ZONE_INTENT={lower:'force',upper:'force',core:'controle',balance:'equilibre',proprioception:'controle',cardio:'cardio',stretching:'mobilite'};
 window.generateProgram = function(metrics, context){
   const { energy=5, fatigue=4, heat=4, sleep=6 } = metrics || {};
-  const { location='maison' } = context || {};
   const { readiness, tier } = window.__readiness(metrics);
   const avail = __avail(context);
   const seed = window.__elanDaySeed();
-  const candidates = (window.ED_SESSIONS||[]).filter(s => s.equip.every(e=>avail.includes(e)));
-  /* historique récent → variété & couverture du corps */
-  const hist = window.__sessHistory();
-  const dayAgo = d => Math.round((Date.now()-new Date(d).getTime())/86400000);
-  const lastById = {}; const regionDays = {}; const weekRegions = new Set();
-  hist.forEach(h=>{ const ago=dayAgo(h.date);
-    if(lastById[h.id]==null||ago<lastById[h.id]) lastById[h.id]=ago;
-    if(h.region && (regionDays[h.region]==null||ago<regionDays[h.region])) regionDays[h.region]=ago;
-    if(ago<7 && h.region) weekRegions.add(h.region);
-  });
-  /* hier était-il un jour engagé ? → aujourd'hui on privilégie la récupération (alternance dur/doux du kiné) */
-  const idGentle={}; (window.ED_SESSIONS||[]).forEach(x=>{ idGentle[x.id]=!!x.gentle; });
-  const intenseYesterday = hist.some(h=>dayAgo(h.date)===1 && idGentle[h.id]===false);
-  /* score chaque séance comme le ferait un kiné spécialiste SEP */
-  function score(s){
-    let sc=0;
-    if(energy>=s.minEnergy && energy<=s.maxEnergy) sc+=30;
-    else sc -= Math.min(34, Math.abs(energy-(energy<s.minEnergy?s.minEnergy:s.maxEnergy))*9);
-    if(fatigue>=7) sc += s.gentle?30:-26;          // fatigue forte → douceur (régularité > intensité)
-    else if(fatigue<=3) sc += s.gentle?-10:14;     // en forme → on travaille
-    if(heat>=7 && s.heatSensitive) sc-=50;          // chaleur → pas de cardio (majore les symptômes SEP)
-    if(sleep<=4 && s.gentle) sc+=10;
-    if(intenseYesterday) sc += s.gentle?16:-8;   // alternance effort/récupération
-    if(tier==='high' && (s.intent==='force'||s.intent==='cardio')) sc+=10;
-    if(tier==='low'  && (s.intent==='fatigue'||s.intent==='mobilite')) sc+=16;
-    /* ── VARIÉTÉ : éviter de répéter la même séance / zone trop vite ── */
-    const lastSame=lastById[s.id];
-    if(lastSame===0) sc-=60; else if(lastSame===1) sc-=24; else if(lastSame===2) sc-=10;
-    const lastReg=regionDays[s.region];
-    if(lastReg===0) sc-=20; else if(lastReg===1) sc-=8;
-    /* ── COUVERTURE DU CORPS : favoriser une zone peu vue cette semaine ── */
-    if(s.region && !weekRegions.has(s.region)) sc+=18;
-    return sc;
-  }
-  const ranked = candidates.map(s=>({s,sc:score(s)})).sort((a,b)=>b.sc-a.sc);
-  const best = ranked.length?ranked[0].sc:0;
-  const top = ranked.filter(r=>r.sc>=best-6).map(r=>r.s);                 // rotation parmi les séances ~équivalentes
-  const chosen = (__rotate(top, seed)[0]) || (ranked[0]&&ranked[0].s) || window.ED_SESSIONS[0];
   const diff = window.__readDiff();
-  /* Releveur du pied (tibial antérieur) : on injecte une variante tant que le muscle n'a pas
-     été travaillé 2× cette semaine — garantit le minimum hebdo. Progression reps/niveau incluse
-     (id stable → passe par __mapExercise / __exLevel comme tout autre exercice). */
-  let dayExs = chosen.exercises;
-  if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiWeekCount() < window.__DORSI_PER_WEEK){
-    const dx=__rotate(window.ED_DORSI, seed)[0]; if(dx) dayExs = chosen.exercises.concat([dx]);
+  const prog = window.__readProg();
+  const dnum = s => s ? Math.round((Date.now()-new Date(s).getTime())/86400000) : 999;
+  const exAge = id => { const p=prog[id]; return p&&p.lastDate?dnum(p.lastDate):999; };
+
+  /* 1 — POOL disponible (selon matériel), exercices de travail dédupliqués par nom (1 id canonique
+        → progression cohérente). Échauffements / retours au calme gardés à part. */
+  const usable = (window.ED_SESSIONS||[]).filter(s=>s.equip.every(e=>avail.includes(e)));
+  const seen=new Set(); const mains=[]; const warmups=[]; const cooldowns=[];
+  usable.forEach(s=>s.exercises.forEach(ex=>{
+    if(ex.phase==='warmup'){ warmups.push(ex); return; }
+    if(ex.phase==='cooldown'){ cooldowns.push(ex); return; }
+    if(seen.has(ex.name)) return; seen.add(ex.name); mains.push(ex);
+  }));
+  (window.ED_STRETCH||[]).forEach(e=>cooldowns.push(e));
+
+  /* 2 — ZONES présentes + récence par zone (historique de séances) */
+  const hist = window.__sessHistory();
+  const regionAge={}; hist.forEach(h=>{ if(h.region){ const a=dnum(h.date); if(regionAge[h.region]==null||a<regionAge[h.region]) regionAge[h.region]=a; } });
+  let zones=[...new Set(mains.map(e=>e.region))].filter(Boolean);
+  if(heat>=7 || tier==='low' || fatigue>=7) zones=zones.filter(z=>z!=='cardio');
+  const zoneScore = z => (regionAge[z]==null?999:regionAge[z]);
+  const zonesRanked = __rotate(zones.slice().sort((a,b)=>zoneScore(b)-zoneScore(a)), seed).sort((a,b)=>zoneScore(b)-zoneScore(a));
+  const primary = zonesRanked[0] || 'lower';
+  const secondary = zonesRanked.find(z=>z!==primary) || null;
+
+  /* 3 — NOMBRE d'exercices selon la forme */
+  let N = tier==='low'?3 : tier==='high'?5 : 4;
+  if(fatigue>=8) N=Math.max(3,N-1);
+  if(energy>=9 && fatigue<=3) N=Math.min(6,N+1);
+
+  /* 4 — SÉLECTION par blocs de zone : les moins récemment faits d'abord (rotation jour en départage) */
+  const pickFromZone = (zone, count, used) => {
+    const list = __rotate(mains.filter(e=>e.region===zone && !used.has(e.name)), seed).sort((a,b)=>exAge(b.id)-exAge(a.id));
+    const out=[]; for(const ex of list){ if(out.length>=count) break; out.push(ex); used.add(ex.name); }
+    return out;
+  };
+  const used=new Set(); const blocks=[];
+  blocks.push(...pickFromZone(primary, Math.max(2, Math.round(N*0.6)), used));
+  if(secondary) blocks.push(...pickFromZone(secondary, N-blocks.length, used));
+  for(const z of zonesRanked){ if(blocks.length>=N) break; if(z===primary||z===secondary) continue; blocks.push(...pickFromZone(z, N-blocks.length, used)); }
+  for(const ex of __rotate(mains,seed).sort((a,b)=>exAge(b.id)-exAge(a.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } }
+
+  /* 5 — Releveur du pied (tibial antérieur), réparti 2×/semaine */
+  if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
+    const dx=__rotate(window.ED_DORSI, seed).sort((a,b)=>exAge(b.id)-exAge(a.id))[0]; if(dx) blocks.push(dx);
   }
-  const hasDorsi = dayExs.some(e=>/^dorsi/.test(e.id||''));
-  const exercises = __ordered(dayExs).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
-  const duration = __sessionDuration(dayExs);
-  const intensity = chosen.gentle ? 'Douce' : (tier==='high' ? 'Soutenue' : 'Modérée');
-  const intentTxt={force:'un renforcement en douceur',equilibre:'l\u2019équilibre et la stabilité',mobilite:'la mobilité, pour des jambes plus légères',fatigue:'de la récupération active, pensée pour les jours fatigués',cardio:'de l\u2019endurance contrôlée au vélo',controle:'le contrôle moteur et le gainage profond'};
-  const regionTxt={lower:'le bas du corps',upper:'le haut du corps',core:'le gainage et le tronc',balance:'l’équilibre',proprioception:'la proprioception',cardio:'le cardio',stretching:'la mobilité'};
+  const hasDorsi = blocks.some(e=>/^dorsi/.test(e.id||''));
+
+  /* 6 — Échauffement (zone principale si possible) + retour au calme */
+  const warm = __rotate(warmups.filter(w=>w.region===primary), seed)[0] || __rotate(warmups, seed)[0];
+  const cool = __rotate(cooldowns, seed+3)[0];
+  const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cool) seq.push(cool);
+
+  const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
+  const duration = __sessionDuration(seq);
+  const intensity = (tier==='low'||fatigue>=7) ? 'Douce' : (tier==='high' ? 'Soutenue' : 'Modérée');
+
+  /* 7 — Explications ("Pourquoi cette séance") */
+  const zl = z => (__ZONE_LABEL[z]||z).toLowerCase();
+  const focusTxt = secondary ? `${zl(primary)} et ${zl(secondary)}` : zl(primary);
   const reasons=[];
-  reasons.push({t:'Séance choisie pour toi', d:`aujourd'hui je te propose de travailler ${intentTxt[chosen.intent]||chosen.title.toLowerCase()}.`});
-  if(fatigue>=7) reasons.push({t:`Fatigue élevée (${fatigue}/10)`, d:'je reste sur du doux : on entretient sans puiser dans tes réserves.'});
-  else if(fatigue<=3) reasons.push({t:`Peu de fatigue (${fatigue}/10)`, d:'tu peux travailler un peu plus franchement aujourd\u2019hui.'});
-  if(heat>=7) reasons.push({t:`Chaleur ressentie forte (${heat}/10)`, d:'pas de vélo ni de cardio — la chaleur majore les symptômes SEP.'});
+  reasons.push({t:'Séance composée pour toi', d:`l'IA a bâti ta séance exercice par exercice à partir de ta forme du jour — aujourd'hui on cible ${focusTxt}.`});
+  if(regionAge[primary]==null) reasons.push({t:'Couverture du corps', d:`tu n'as pas (ou peu) travaillé ${zl(primary)} récemment — on rééquilibre.`});
+  else reasons.push({t:'Variété', d:'j’ai écarté les exercices que tu viens de faire pour renouveler ta séance.'});
+  if(fatigue>=7) reasons.push({t:`Fatigue élevée (${fatigue}/10)`, d:'je réduis le volume et reste sur du doux : on entretient sans puiser dans tes réserves.'});
+  else if(fatigue<=3) reasons.push({t:`Peu de fatigue (${fatigue}/10)`, d:'tu peux travailler un peu plus franchement aujourd’hui.'});
+  if(heat>=7) reasons.push({t:`Chaleur ressentie forte (${heat}/10)`, d:'pas de cardio aujourd’hui — la chaleur majore les symptômes SEP.'});
   if(sleep>=7) reasons.push({t:`Bonne nuit (${sleep}/10)`, d:'ta récupération suit, on peut maintenir le cap.'});
   else if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'je garde une marge de sécurité.'});
-  reasons.push({t:'Structure respectée', d:'échauffement, travail, puis retour au calme — comme avec ton kiné.'});
-  if(intenseYesterday && chosen.gentle) reasons.push({t:'Récupération active', d:'hier était une séance plus engagée — aujourd\u2019hui on récupère en douceur pour laisser le corps assimiler.'});
-  if(hasDorsi) reasons.push({t:'Releveur du pied', d:'on travaille le tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Il revient au moins 2× par semaine.'});
+  reasons.push({t:'Structure respectée', d:'échauffement, travail groupé par zone, puis retour au calme.'});
+  if(hasDorsi) reasons.push({t:'Releveur du pied', d:'on travaille le tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
-  const recentRegions=[...weekRegions];
-  if(!weekRegions.has(chosen.region) && recentRegions.length){ reasons.push({t:'Pour varier', d:`ces jours-ci tu as surtout travaillé ${recentRegions.map(r=>regionTxt[r]||r).join(', ')} — aujourd'hui on cible ${regionTxt[chosen.region]||chosen.title.toLowerCase()} pour équilibrer le corps.`}); }
-  else if(lastById[chosen.id]!=null && lastById[chosen.id]>=2){ reasons.push({t:'Séance renouvelée', d:'différente de tes dernières séances, pour éviter la routine.'}); }
-  return { title:chosen.title, intensity, duration, readiness, tier, exercises, reasons, sessionId:chosen.id, region:chosen.region, intent:chosen.intent, hasDorsi, modules:null, moduleEndIdx:null };
+
+  const title = secondary ? `${__ZONE_LABEL[primary]} & ${zl(secondary)}` : __ZONE_LABEL[primary];
+  return { title, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia', region:primary, intent:(__ZONE_INTENT[primary]||'controle'), hasDorsi, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
