@@ -423,7 +423,7 @@ window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStora
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
 window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month'];
-window.__resetAllData=function(){ try{ if(window.localStorage) window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); }catch(e){} };
+window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
   const bil=(window.ED&&window.ED.bilans)||[]; const last=bil[bil.length-1]||{}; const first=bil[0]||{};
