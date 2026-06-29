@@ -538,14 +538,32 @@ function __sessionDuration(exs){ return Math.max(5, Math.round(exs.reduce((s,e)=
 const __PHASE={warmup:0,main:1,cooldown:2};
 function __ordered(exs){ return exs.map((e,i)=>[e,i]).sort((a,b)=>(__PHASE[a[0].phase]-__PHASE[b[0].phase])||(a[1]-b[1])).map(x=>x[0]); }
 
-/* ═══ SÉANCE DU JOUR — l'IA COMPOSE la séance exercice par exercice ═══
-   À partir du pool d'exercices disponibles (selon le matériel), l'IA bâtit chaque jour une séance :
-   elle choisit les ZONES à travailler (couverture du corps + récence), pioche dans chaque zone
-   les exercices les MOINS récemment faits (variété / « pas les derniers exos »), module le volume
-   selon la forme du jour, et garde une structure en blocs (échauffement → travail groupé par zone →
-   retour au calme). La progression par exercice est conservée (__mapExercise / __exLevel). */
+/* ═══ SÉANCE DU JOUR — l'IA raisonne comme un kiné spécialiste SEP ═══
+   Priorité aux membres inférieurs (zone la plus touchée par la SEP). Séances cohérentes par
+   "archétype" (force bas + proprio en ALTERNANCE pour reposer le muscle, équilibre, contrôle /
+   double-tâche, excentrique, récup / mobilité, haut + gainage pour reposer les jambes), choisies
+   selon la forme du jour, la récence et l'alternance effort/repos. Composition exercice par
+   exercice, progression conservée (__mapExercise / __exLevel). */
 const __ZONE_LABEL={lower:'Bas du corps',upper:'Haut du corps',core:'Gainage & tronc',balance:'Équilibre',proprioception:'Proprioception',cardio:'Cardio',stretching:'Mobilité'};
 const __ZONE_INTENT={lower:'force',upper:'force',core:'controle',balance:'equilibre',proprioception:'controle',cardio:'cardio',stretching:'mobilite'};
+/* Archétypes : zones=[dominante, secondaire]. order:'alt' = alterne effort/repos (le muscle
+   récupère pendant la proprio/équilibre). leg=true → membres inférieurs (prioritaires en SEP). */
+const __ARCHES=[
+  {id:'force_bas_proprio',label:'Bas du corps & proprioception',zones:['lower','proprioception'],order:'alt',intent:'force',leg:true,
+   why:'force des jambes en alternance avec de la proprioception — pendant que tu travailles la stabilité, tes muscles récupèrent entre les séries.'},
+  {id:'renfo_bas',label:'Renforcement bas du corps',zones:['lower','balance'],order:'alt',intent:'force',leg:true,
+   why:'renforcement des jambes, entrecoupé d’équilibre pour laisser les muscles souffler entre les efforts.'},
+  {id:'excentrique',label:'Force excentrique — contrôle du freinage',zones:['lower','core'],order:'block',intent:'force',leg:true,hard:true,
+   why:'travail du freinage (excentrique), très efficace en SEP pour la force utile à la marche — réservé aux jours où l’énergie suit.'},
+  {id:'equilibre',label:'Équilibre & stabilité',zones:['balance','proprioception'],order:'block',intent:'equilibre',leg:true,
+   why:'équilibre et stabilité de cheville — central quand la SEP touche les jambes.'},
+  {id:'controle',label:'Contrôle moteur & coordination',zones:['proprioception','balance'],order:'block',intent:'controle',leg:true,
+   why:'contrôle moteur et coordination (double-tâche) — pour une marche plus sûre au quotidien.'},
+  {id:'haut_core',label:'Haut du corps & gainage',zones:['upper','core'],order:'block',intent:'force',leg:false,
+   why:'haut du corps et gainage — on laisse les jambes récupérer tout en gardant le tronc solide.'},
+  {id:'recup',label:'Récupération & mobilité',zones:['lower','stretching'],order:'block',intent:'mobilite',leg:true,gentle:true,
+   why:'journée plus fatiguée : on entretient en douceur (mobilité des jambes, étirements) sans puiser dans tes réserves.'},
+];
 window.generateProgram = function(metrics, context){
   const { energy=5, fatigue=4, heat=4, sleep=6 } = metrics || {};
   const { readiness, tier } = window.__readiness(metrics);
@@ -553,81 +571,108 @@ window.generateProgram = function(metrics, context){
   const seed = window.__elanDaySeed();
   const diff = window.__readDiff();
   const prog = window.__readProg();
-  const dnum = s => s ? Math.round((Date.now()-new Date(s).getTime())/86400000) : 999;
+  const dnum = s => { if(!s) return 999; const a=new Date(s); if(isNaN(a)) return 999; const n=new Date();
+    return Math.round((Date.UTC(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate())-Date.UTC(a.getUTCFullYear(),a.getUTCMonth(),a.getUTCDate()))/86400000); };
   const exAge = id => { const p=prog[id]; return p&&p.lastDate?dnum(p.lastDate):999; };
 
-  /* 1 — POOL disponible (selon matériel), exercices de travail dédupliqués par nom (1 id canonique
-        → progression cohérente). Échauffements / retours au calme gardés à part. */
+  /* POOL disponible (selon matériel), exercices de travail dédupliqués par nom */
   const usable = (window.ED_SESSIONS||[]).filter(s=>s.equip.every(e=>avail.includes(e)));
-  const seen=new Set(); const mains=[]; const warmups=[]; const cooldowns=[];
+  const seen=new Set(); const mainsAll=[]; const warmups=[]; const cooldowns=[];
   usable.forEach(s=>s.exercises.forEach(ex=>{
     if(ex.phase==='warmup'){ warmups.push(ex); return; }
     if(ex.phase==='cooldown'){ cooldowns.push(ex); return; }
-    if(seen.has(ex.name)) return; seen.add(ex.name); mains.push(ex);
+    if(seen.has(ex.name)) return; seen.add(ex.name); mainsAll.push(ex);
   }));
   (window.ED_STRETCH||[]).forEach(e=>cooldowns.push(e));
+  const byZone = z => mainsAll.filter(e=>e.region===z);
+  const zoneHas = z => byZone(z).length>0;
 
-  /* 2 — ZONES présentes + récence par zone (historique de séances) */
+  /* historique : récence par zone + dernier archétype + jambes sollicitées récemment */
   const hist = window.__sessHistory();
-  const regionAge={}; hist.forEach(h=>{ if(h.region){ const a=dnum(h.date); if(regionAge[h.region]==null||a<regionAge[h.region]) regionAge[h.region]=a; } });
-  let zones=[...new Set(mains.map(e=>e.region))].filter(Boolean);
-  if(heat>=7 || tier==='low' || fatigue>=7) zones=zones.filter(z=>z!=='cardio');
-  const zoneScore = z => (regionAge[z]==null?999:regionAge[z]);
-  const zonesRanked = __rotate(zones.slice().sort((a,b)=>zoneScore(b)-zoneScore(a)), seed).sort((a,b)=>zoneScore(b)-zoneScore(a));
-  const primary = zonesRanked[0] || 'lower';
-  const secondary = zonesRanked.find(z=>z!==primary) || null;
+  const regionAge={}; const archeAge={};
+  hist.forEach(h=>{ const a=dnum(h.date);
+    if(h.region && (regionAge[h.region]==null||a<regionAge[h.region])) regionAge[h.region]=a;
+    if(h.id && /^ia-/.test(h.id) && (archeAge[h.id]==null||a<archeAge[h.id])) archeAge[h.id]=a; });
+  const ageOf = z => (regionAge[z]==null?999:regionAge[z]);
+  const legHardRecent = hist.some(h=>dnum(h.date)<=1 && h.intent==='force' && h.region==='lower');
+  const upperStale = ageOf('upper')>=6;
 
-  /* 3 — NOMBRE d'exercices selon la forme */
+  /* ── SCORE des archétypes (raisonnement kiné, biais membres inférieurs) ── */
+  function scoreArche(a){
+    if(!zoneHas(a.zones[0])) return -1e9;
+    let sc=0;
+    if(a.leg) sc+=16;                                   // SEP → priorité aux jambes
+    if(a.gentle){ sc += (tier==='low'?40 : fatigue>=7?34 : heat>=7?22 : -22); }
+    else if(a.hard){ sc += (tier==='high'?24 : tier==='moderate'?-8 : -50) + (energy>=8?8:0); } // excentrique = avancé, plus rare
+    else if(a.intent==='force'){ sc += (tier==='high'?24 : tier==='moderate'?15 : -28); }       // force bas + proprio : pilier
+    else { sc += (tier==='low'?4 : 12); }               // équilibre / contrôle : ok à toute forme
+    if(a.id==='force_bas_proprio') sc+=4;               // séance phare (force + proprio en alternance)
+    if(legHardRecent){ if(a.intent==='force'&&a.leg) sc-=22; if(!a.leg) sc+=20; if(a.intent==='equilibre'||a.intent==='controle') sc+=10; if(a.gentle) sc+=8; }
+    if(!a.leg && upperStale) sc+=18;                    // haut du corps ~1×/semaine malgré le biais jambes
+    const aa=archeAge['ia-'+a.id];                      // variété : éviter de répéter un archétype récent
+    if(aa!=null) sc-= (aa<=0?44 : aa===1?26 : aa===2?12 : aa<=4?5:0);
+    sc += Math.min(12, ageOf(a.zones[0]));              // favorise les zones peu vues
+    return sc;
+  }
+  const ranked = __ARCHES.map(a=>({a,sc:scoreArche(a)})).filter(r=>r.sc>-1e8).sort((x,y)=>y.sc-x.sc);
+  const bestSc = ranked.length?ranked[0].sc:0;
+  const topTies = ranked.filter(r=>r.sc>=bestSc-5).map(r=>r.a);
+  const arche = __rotate(topTies, seed)[0] || (ranked[0]&&ranked[0].a) || __ARCHES[3];
+
+  /* ── COMPOSITION selon l'archétype ── */
   let N = tier==='low'?3 : tier==='high'?5 : 4;
   if(fatigue>=8) N=Math.max(3,N-1);
-  if(energy>=9 && fatigue<=3) N=Math.min(6,N+1);
+  if(energy>=9 && fatigue<=3 && !arche.gentle) N=Math.min(6,N+1);
+  if(arche.gentle) N=Math.min(N,3);
 
-  /* 4 — SÉLECTION par blocs de zone : les moins récemment faits d'abord (rotation jour en départage) */
-  const pickFromZone = (zone, count, used) => {
-    const list = __rotate(mains.filter(e=>e.region===zone && !used.has(e.name)), seed).sort((a,b)=>exAge(b.id)-exAge(a.id));
-    const out=[]; for(const ex of list){ if(out.length>=count) break; out.push(ex); used.add(ex.name); }
-    return out;
-  };
-  const used=new Set(); const blocks=[];
-  blocks.push(...pickFromZone(primary, Math.max(2, Math.round(N*0.6)), used));
-  if(secondary) blocks.push(...pickFromZone(secondary, N-blocks.length, used));
-  for(const z of zonesRanked){ if(blocks.length>=N) break; if(z===primary||z===secondary) continue; blocks.push(...pickFromZone(z, N-blocks.length, used)); }
-  for(const ex of __rotate(mains,seed).sort((a,b)=>exAge(b.id)-exAge(a.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } }
+  const used=new Set();
+  const pick = (zone, count) => { const list=__rotate(byZone(zone).filter(e=>!used.has(e.name)), seed).sort((p,q)=>exAge(q.id)-exAge(p.id));
+    const out=[]; for(const ex of list){ if(out.length>=count) break; out.push(ex); used.add(ex.name); } return out; };
 
-  /* 5 — Releveur du pied (tibial antérieur), réparti 2×/semaine */
+  const zoneA=arche.zones[0]; const zoneB=(arche.zones[1] && zoneHas(arche.zones[1])) ? arche.zones[1] : null;
+  let blocks=[];
+  if(zoneB){
+    const nA = arche.order==='alt' ? Math.ceil(N/2) : Math.ceil(N*0.6);   // alt = split équilibré → vraie alternance
+    const nB = N - nA;
+    const A=pick(zoneA,nA), B=pick(zoneB,nB);
+    if(arche.order==='alt'){ const out=[]; const m=Math.max(A.length,B.length); for(let i=0;i<m;i++){ if(A[i])out.push(A[i]); if(B[i])out.push(B[i]); } blocks=out; }
+    else blocks=A.concat(B);
+  } else { blocks=pick(zoneA,N); }
+  if(blocks.length<N){ for(const ex of pick('lower', N-blocks.length)) blocks.push(ex); }      // biais jambes
+  if(blocks.length<N){ for(const ex of __rotate(mainsAll,seed).sort((p,q)=>exAge(q.id)-exAge(p.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } } }
+
+  /* Releveur du pied (réparti 2×/semaine) */
   if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
-    const dx=__rotate(window.ED_DORSI, seed).sort((a,b)=>exAge(b.id)-exAge(a.id))[0]; if(dx) blocks.push(dx);
+    const dx=__rotate(window.ED_DORSI, seed).sort((p,q)=>exAge(q.id)-exAge(p.id))[0]; if(dx) blocks.push(dx);
   }
   const hasDorsi = blocks.some(e=>/^dorsi/.test(e.id||''));
 
-  /* 6 — Échauffement (zone principale si possible) + retour au calme */
-  const warm = __rotate(warmups.filter(w=>w.region===primary), seed)[0] || __rotate(warmups, seed)[0];
-  const cool = __rotate(cooldowns, seed+3)[0];
-  const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cool) seq.push(cool);
+  /* Échauffement (zone dominante) + retour au calme (1, ou 2 si récup/mobilité) */
+  const warm = __rotate(warmups.filter(w=>w.region===zoneA), seed)[0] || __rotate(warmups, seed)[0];
+  const cools = __rotate(cooldowns, seed+3);
+  const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
   const duration = __sessionDuration(seq);
-  const intensity = (tier==='low'||fatigue>=7) ? 'Douce' : (tier==='high' ? 'Soutenue' : 'Modérée');
+  const intensity = (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
 
-  /* 7 — Explications ("Pourquoi cette séance") */
-  const zl = z => (__ZONE_LABEL[z]||z).toLowerCase();
-  const focusTxt = secondary ? `${zl(primary)} et ${zl(secondary)}` : zl(primary);
+  /* Explications "Pourquoi cette séance" */
   const reasons=[];
-  reasons.push({t:'Séance composée pour toi', d:`l'IA a bâti ta séance exercice par exercice à partir de ta forme du jour — aujourd'hui on cible ${focusTxt}.`});
-  if(regionAge[primary]==null) reasons.push({t:'Couverture du corps', d:`tu n'as pas (ou peu) travaillé ${zl(primary)} récemment — on rééquilibre.`});
-  else reasons.push({t:'Variété', d:'j’ai écarté les exercices que tu viens de faire pour renouveler ta séance.'});
-  if(fatigue>=7) reasons.push({t:`Fatigue élevée (${fatigue}/10)`, d:'je réduis le volume et reste sur du doux : on entretient sans puiser dans tes réserves.'});
+  reasons.push({t:'Séance pensée comme un kiné', d:arche.why});
+  reasons.push({t:'Priorité aux jambes', d:'ta SEP touche surtout les membres inférieurs — je leur donne plus de place dans la semaine qu’au haut du corps.'});
+  if(arche.order==='alt') reasons.push({t:'Alternance effort / repos', d:'j’alterne renforcement et stabilité : tes muscles récupèrent pendant les exercices de proprioception.'});
+  if(legHardRecent && !arche.leg) reasons.push({t:'Repos des jambes', d:'tu as sollicité tes jambes récemment — aujourd’hui on les laisse récupérer.'});
+  if(arche.hard) reasons.push({t:`Bonne énergie (${energy}/10)`, d:'ta forme le permet : on passe sur de la vraie force.'});
+  if(fatigue>=7) reasons.push({t:`Fatigue élevée (${fatigue}/10)`, d:'volume réduit, on entretient sans puiser dans tes réserves.'});
   else if(fatigue<=3) reasons.push({t:`Peu de fatigue (${fatigue}/10)`, d:'tu peux travailler un peu plus franchement aujourd’hui.'});
-  if(heat>=7) reasons.push({t:`Chaleur ressentie forte (${heat}/10)`, d:'pas de cardio aujourd’hui — la chaleur majore les symptômes SEP.'});
-  if(sleep>=7) reasons.push({t:`Bonne nuit (${sleep}/10)`, d:'ta récupération suit, on peut maintenir le cap.'});
-  else if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'je garde une marge de sécurité.'});
-  reasons.push({t:'Structure respectée', d:'échauffement, travail groupé par zone, puis retour au calme.'});
-  if(hasDorsi) reasons.push({t:'Releveur du pied', d:'on travaille le tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
+  if(heat>=7) reasons.push({t:`Chaleur forte (${heat}/10)`, d:'on reste prudent — la chaleur majore les symptômes SEP.'});
+  if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'je garde une marge de sécurité.'});
+  reasons.push({t:'Structure respectée', d:arche.order==='alt'?'échauffement, travail en alternance, puis retour au calme.':'échauffement, travail ciblé, puis retour au calme.'});
+  if(hasDorsi) reasons.push({t:'Releveur du pied', d:'tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
 
-  const title = secondary ? `${__ZONE_LABEL[primary]} & ${zl(secondary)}` : __ZONE_LABEL[primary];
-  return { title, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia', region:primary, intent:(__ZONE_INTENT[primary]||'controle'), hasDorsi, modules:null, moduleEndIdx:null };
+  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
