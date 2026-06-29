@@ -866,7 +866,7 @@ function BottomNav({ activeTab, onTabChange }) {
   return (
     <div style={{position:'absolute',bottom:20,left:'50%',transform:'translateX(-50%)',zIndex:100,width:318}}>
       <nav style={{display:'flex',alignItems:'center',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(20px)',WebkitBackdropFilter:'blur(20px)',borderRadius:9999,border:`1px solid ${C.line}`,boxShadow:'0 10px 34px rgba(14,81,74,0.16)',height:58,padding:'0 6px',position:'relative'}}>
-        <div style={{position:'absolute',top:6,left:`calc(${ai*25}% + 4px)`,width:'calc(25% - 8px)',height:'calc(100% - 12px)',background:'rgba(47,191,161,0.13)',borderRadius:9999,border:'1px solid rgba(47,191,161,0.30)',transition:'left 360ms cubic-bezier(0.34,1.56,0.64,1)',pointerEvents:'none'}}/>
+        <div style={{position:'absolute',top:6,left:`calc(${ai} * (100% - 12px) / 4 + 10px)`,width:'calc((100% - 12px) / 4 - 8px)',height:'calc(100% - 12px)',background:'rgba(47,191,161,0.13)',borderRadius:9999,border:'1px solid rgba(47,191,161,0.30)',transition:'left 360ms cubic-bezier(0.34,1.56,0.64,1)',pointerEvents:'none'}}/>
         {TABS.map(t=>{const a=activeTab===t.id;return(
           <button key={t.id} onClick={()=>onTabChange&&onTabChange(t.id)} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:a?3:0,background:'transparent',border:'none',cursor:'pointer',height:'100%',position:'relative',zIndex:1,padding:'4px 2px'}}>
             <div style={{transform:a?'scale(1.12)':'scale(1)',transition:'all 280ms cubic-bezier(0.34,1.56,0.64,1)'}}>{t.icon(a,20)}</div>
