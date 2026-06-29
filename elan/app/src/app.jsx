@@ -288,7 +288,7 @@ window.__logSessionDone=function(info){
   const all=window.__sessHistory();
   const today=new Date().toISOString().slice(0,10);
   const f=all.filter(e=>!(e.date===today && e.id===info.id));
-  f.push({date:today,id:info.id,region:info.region||'',intent:info.intent||''});
+  f.push({date:today,id:info.id,region:info.region||'',intent:info.intent||'',dorsi:!!info.dorsi});
   const cut=new Date(Date.now()-60*86400000).toISOString().slice(0,10);
   const trimmed=f.filter(e=>e.date>cut).sort((a,b)=>a.date<b.date?-1:1);
   try{ if(window.localStorage) localStorage.setItem('elan_sessHistory',JSON.stringify(trimmed)); }catch(e){}
@@ -310,6 +310,10 @@ window.__weekDoneCount=function(){
   const cut=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
   return [...new Set(window.__sessHistory().filter(e=>e.date>cut).map(e=>e.date))].length;
 };
+/* ─── Releveur du pied (tibial antérieur) : garantir ≥ 2 séances / semaine ISO ─── */
+window.__isoWeekKey=function(dt){ const d=dt?new Date(dt):new Date(); const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day); const ys=new Date(Date.UTC(t.getUTCFullYear(),0,1)); const wk=Math.ceil((((t-ys)/86400000)+1)/7); return t.getUTCFullYear()+'-W'+wk; };
+window.__dorsiWeekCount=function(){ const wk=window.__isoWeekKey(); return window.__sessHistory().filter(e=>e.dorsi && window.__isoWeekKey(e.date)===wk).length; };
+window.__DORSI_PER_WEEK=2;
 window.__bestStreak=function(){
   const days=[...new Set(window.__sessHistory().map(e=>e.date))].sort();
   if(!days.length) return 0;
@@ -565,8 +569,16 @@ window.generateProgram = function(metrics, context){
   const top = ranked.filter(r=>r.sc>=best-6).map(r=>r.s);                 // rotation parmi les séances ~équivalentes
   const chosen = (__rotate(top, seed)[0]) || (ranked[0]&&ranked[0].s) || window.ED_SESSIONS[0];
   const diff = window.__readDiff();
-  const exercises = __ordered(chosen.exercises).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
-  const duration = __sessionDuration(chosen.exercises);
+  /* Releveur du pied (tibial antérieur) : on injecte une variante tant que le muscle n'a pas
+     été travaillé 2× cette semaine — garantit le minimum hebdo. Progression reps/niveau incluse
+     (id stable → passe par __mapExercise / __exLevel comme tout autre exercice). */
+  let dayExs = chosen.exercises;
+  if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiWeekCount() < window.__DORSI_PER_WEEK){
+    const dx=__rotate(window.ED_DORSI, seed)[0]; if(dx) dayExs = chosen.exercises.concat([dx]);
+  }
+  const hasDorsi = dayExs.some(e=>/^dorsi/.test(e.id||''));
+  const exercises = __ordered(dayExs).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
+  const duration = __sessionDuration(dayExs);
   const intensity = chosen.gentle ? 'Douce' : (tier==='high' ? 'Soutenue' : 'Modérée');
   const intentTxt={force:'un renforcement en douceur',equilibre:'l\u2019équilibre et la stabilité',mobilite:'la mobilité, pour des jambes plus légères',fatigue:'de la récupération active, pensée pour les jours fatigués',cardio:'de l\u2019endurance contrôlée au vélo',controle:'le contrôle moteur et le gainage profond'};
   const regionTxt={lower:'le bas du corps',upper:'le haut du corps',core:'le gainage et le tronc',balance:'l’équilibre',proprioception:'la proprioception',cardio:'le cardio',stretching:'la mobilité'};
@@ -579,12 +591,13 @@ window.generateProgram = function(metrics, context){
   else if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'je garde une marge de sécurité.'});
   reasons.push({t:'Structure respectée', d:'échauffement, travail, puis retour au calme — comme avec ton kiné.'});
   if(intenseYesterday && chosen.gentle) reasons.push({t:'Récupération active', d:'hier était une séance plus engagée — aujourd\u2019hui on récupère en douceur pour laisser le corps assimiler.'});
+  if(hasDorsi) reasons.push({t:'Releveur du pied', d:'on travaille le tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Il revient au moins 2× par semaine.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
   const recentRegions=[...weekRegions];
   if(!weekRegions.has(chosen.region) && recentRegions.length){ reasons.push({t:'Pour varier', d:`ces jours-ci tu as surtout travaillé ${recentRegions.map(r=>regionTxt[r]||r).join(', ')} — aujourd'hui on cible ${regionTxt[chosen.region]||chosen.title.toLowerCase()} pour équilibrer le corps.`}); }
   else if(lastById[chosen.id]!=null && lastById[chosen.id]>=2){ reasons.push({t:'Séance renouvelée', d:'différente de tes dernières séances, pour éviter la routine.'}); }
-  return { title:chosen.title, intensity, duration, readiness, tier, exercises, reasons, sessionId:chosen.id, region:chosen.region, intent:chosen.intent, modules:null, moduleEndIdx:null };
+  return { title:chosen.title, intensity, duration, readiness, tier, exercises, reasons, sessionId:chosen.id, region:chosen.region, intent:chosen.intent, hasDorsi, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
@@ -1522,7 +1535,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{
       if(!allDone||summary) return;
       const before=window.__streak();
-      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||''});
+      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||''))});
       const streak=window.__streak();
       const week=window.__weekDoneCount();
       const goal=4;

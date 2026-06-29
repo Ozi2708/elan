@@ -87,4 +87,12 @@
     {name:'Étirement global chaîne postérieure (dos + ischios)',zone:'Dos',sets:2,sec:60,doseText:'2 × 60 secondes',position:'Debout, légère flexion des genoux, ou assis jambes tendues.',desc:'Enroule lentement la colonne vers l\u2019avant, relâche la nuque et les bras vers le sol.',conseil:'À faire en fin de séance pour relâcher l\u2019ensemble de la chaîne postérieure et limiter les raideurs du soir.'},
   ].map((e,i)=>({name:e.name,phase:'cooldown',region:'stretching',unit:'time',sets:e.sets,sec:e.sec,workSec:e.sec,doseText:e.doseText,rest:0,muscles:'',position:e.position,desc:e.desc,conseil:e.conseil,alternative:'',id:'xsp'+i,zone:e.zone}));
   window.ED_STRETCH.push(...sp);
+
+  /* ── F · Releveur du pied (tibial antérieur) — anti « pied tombant », clé en SEP ──
+     Pool dédié, injecté par le moteur dans la séance du jour pour garantir un travail
+     régulier du muscle qui relève le pied (steppage). Progression reps/niveau comme le reste. */
+  window.ED_DORSI = [
+    {name:'Relevés de pointes de pieds (assis)',phase:'main',region:'lower',unit:'reps',sets:2,reps:15,workSec:0,doseText:'2 séries de 15 répétitions',rest:45,muscles:'Tibial antérieur (releveur du pied)',position:'Assis sur une chaise, pieds à plat, talons au sol.',desc:'En gardant les talons bien ancrés au sol, lève le plus haut possible l’avant des pieds et les orteils vers toi, puis repose lentement.',conseil:'C’est le muscle qui relève le pied — l’entraîner aide contre le pied tombant (steppage). Monte au maximum, contrôle la descente.',alternative:'Un pied à la fois, ou réduis à 2 × 10.',id:'dorsi-1'},
+    {name:'Relevés de pointes debout (avec appui)',phase:'main',region:'lower',unit:'reps',sets:2,reps:12,workSec:0,doseText:'2 séries de 12 répétitions',rest:45,muscles:'Tibial antérieur (releveur du pied)',position:'Debout, talons au sol, mains sur une chaise ou un mur.',desc:'Talons ancrés au sol, lève l’avant des deux pieds (orteils vers le haut), tiens 1 s, puis repose lentement.',conseil:'Version debout, plus fonctionnelle pour la marche. Garde un appui des mains pour la stabilité.',alternative:'Reste assis (version chaise), ou réduis à 2 × 8.',id:'dorsi-2'},
+  ];
 })();
