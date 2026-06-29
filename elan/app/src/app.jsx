@@ -952,7 +952,7 @@ const TABS=[
 function BottomNav({ activeTab, onTabChange }) {
   const ai=TABS.findIndex(t=>t.id===activeTab);
   return (
-    <div style={{position:'absolute',bottom:20,left:'50%',transform:'translateX(-50%)',zIndex:100,width:318}}>
+    <div style={{position:'absolute',bottom:'calc(20px + env(safe-area-inset-bottom, 0px))',left:'50%',transform:'translateX(-50%)',zIndex:100,width:318}}>
       <nav style={{display:'flex',alignItems:'center',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(20px)',WebkitBackdropFilter:'blur(20px)',borderRadius:9999,border:`1px solid ${C.line}`,boxShadow:'0 10px 34px rgba(14,81,74,0.16)',height:58,padding:'0 6px',position:'relative'}}>
         <div style={{position:'absolute',top:6,left:`calc(${ai} * (100% - 12px) / 4 + 10px)`,width:'calc((100% - 12px) / 4 - 8px)',height:'calc(100% - 12px)',background:'rgba(47,191,161,0.13)',borderRadius:9999,border:'1px solid rgba(47,191,161,0.30)',transition:'left 360ms cubic-bezier(0.34,1.56,0.64,1)',pointerEvents:'none'}}/>
         {TABS.map(t=>{const a=activeTab===t.id;return(
@@ -3271,8 +3271,8 @@ function App() {
       {checkedIn&&reviewCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:205,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
-      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
-      <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 100}}>
+      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'env(safe-area-inset-bottom, 0px)'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
+      <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(100px + env(safe-area-inset-bottom, 0px))'}}>
         <div key={tab+String(started)} className="screen-in">
           {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder)?'24px 24px 0':0}}>{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
