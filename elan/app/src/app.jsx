@@ -103,7 +103,7 @@ window.ED = {
       desc:'Assise jambes tendues, penche-toi doucement vers tes pieds sans forcer ni rebondir. Respire profondément dans l\u2019étirement.'},
   ],
 
-  formeHistory: [52,58,49,61,57,64,55,70,62,68,73,66,72,78],
+  formeHistory: [],   /* réel : window.__formeHistory() (journal de check-in) */
   /* Tests fonctionnels mensuels — validés dans la SEP (lever de chaise 30 s, appui unipodal, flexion avant) */
   tests: [
     {key:'sts',     label:'Chaise contre le mur', short:'Force des jambes', unit:'s', sub:'tenue maximale',       higher:true, color:'#12A38C'},
@@ -112,20 +112,9 @@ window.ED = {
     {key:'balance', label:'Tenir sur un pied',   short:'Équilibre',        unit:'s',      sub:'meilleure jambe',      higher:true, color:'#3A7FCC'},
     {key:'reach',   label:'Flexion avant',       short:'Souplesse',        unit:'cm',     sub:'mains vers les pieds', higher:true, color:'#7BA83E'},
   ],
-  bilans: [
-    {month:'Janv.', sts:24, pushup:5,  plank:18, balance:12, reach:-9},
-    {month:'Févr.', sts:31, pushup:6,  plank:24, balance:15, reach:-7},
-    {month:'Mars',  sts:38, pushup:8,  plank:31, balance:19, reach:-5},
-    {month:'Avr.',  sts:46, pushup:9,  plank:38, balance:23, reach:-3},
-    {month:'Mai',   sts:53, pushup:11, plank:45, balance:27, reach:-1},
-  ],
+  bilans: [],   /* réel : window.__readBilans() (bilans mensuels enregistrés) */
   garmin: { sleepScore:78, sleepHours:'7 h 12', restingHR:58, bodyBattery:64, steps:4820 },
-  recentSessions:[
-    {date:'Hier',title:'Équilibre & renfo',duration:25,forme:64},
-    {date:'Avant-hier',title:'Séance douce',duration:15,forme:49},
-    {date:'Dim',title:'Séance complète',duration:38,forme:78},
-    {date:'Sam',title:'Équilibre & renfo',duration:25,forme:62},
-  ],
+  recentSessions:[],   /* réel : window.__recentSessions() (historique de séances) */
   week:[
     {label:'L',done:true,forme:62},{label:'M',done:true,forme:55},{label:'M',done:false,forme:0},
     {label:'J',done:true,forme:70},{label:'V',done:true,forme:66},{label:'S',done:false,forme:0},{label:'D',done:null,forme:null},
@@ -139,18 +128,9 @@ window.ED = {
     {id:6,name:'Rotation thoracique',sets:2,reps:8,area:'core'},
   ],
 
-  /* Répartition des efforts — 30 derniers jours (par zone) */
-  focusAreas:[
-    {key:'lower',count:20},{key:'balance',count:14},{key:'core',count:12},
-    {key:'stretching',count:11},{key:'upper',count:9},{key:'cardio',count:7},{key:'proprioception',count:6},
-  ],
-  /* Évolution hebdo de la répartition (4 semaines) */
-  focusWeeks:[
-    {label:'S22',balance:3,lower:5,upper:2,core:3,proprioception:1,cardio:2,stretching:2},
-    {label:'S23',balance:4,lower:5,upper:2,core:3,proprioception:1,cardio:2,stretching:3},
-    {label:'S24',balance:3,lower:6,upper:2,core:3,proprioception:2,cardio:1,stretching:3},
-    {label:'S25',balance:5,lower:4,upper:3,core:3,proprioception:2,cardio:2,stretching:3},
-  ],
+  /* Répartition des efforts — réel : window.__focusAreas() / window.__focusWeeks() */
+  focusAreas:[],
+  focusWeeks:[],
   /* Trophées / gamification */
   badges:[
     {id:'streak',label:'Régularité',sub:'5 jours de suite',earned:true,color:'#F2602E',icon:'flame'},
@@ -288,7 +268,8 @@ window.__logSessionDone=function(info){
   const all=window.__sessHistory();
   const today=new Date().toISOString().slice(0,10);
   const f=all.filter(e=>!(e.date===today && e.id===info.id));
-  f.push({date:today,id:info.id,region:info.region||'',intent:info.intent||'',dorsi:!!info.dorsi});
+  f.push({date:today,id:info.id,region:info.region||'',intent:info.intent||'',dorsi:!!info.dorsi,
+          title:info.title||'',duration:info.duration||0,areas:info.areas||[],forme:info.forme!=null?info.forme:null});
   const cut=new Date(Date.now()-60*86400000).toISOString().slice(0,10);
   const trimmed=f.filter(e=>e.date>cut).sort((a,b)=>a.date<b.date?-1:1);
   try{ if(window.localStorage) localStorage.setItem('elan_sessHistory',JSON.stringify(trimmed)); }catch(e){}
@@ -341,7 +322,7 @@ window.__bestStreak=function(){
 /* ─── État du jour : check-in fait ? séance faite ? (1re ouverture = check-in, ensuite = programme) ─── */
 window.__today=function(){ return new Date().toISOString().slice(0,10); };
 window.__readCheckin=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_checkin'))||'null'); }catch(e){ return null; } };
-window.__saveCheckin=function(metrics){ const rec={date:window.__today(),metrics:metrics||{}}; try{ if(window.localStorage) localStorage.setItem('elan_checkin',JSON.stringify(rec)); }catch(e){} return rec; };
+window.__saveCheckin=function(metrics){ const rec={date:window.__today(),metrics:metrics||{}}; try{ if(window.localStorage) localStorage.setItem('elan_checkin',JSON.stringify(rec)); }catch(e){} try{ window.__pushForme(window.__readiness(metrics).readiness); }catch(e){} return rec; };
 window.__checkedInToday=function(){ const c=window.__readCheckin(); return !!(c&&c.date===window.__today()); };
 window.__sessionDoneToday=function(){ return window.__sessHistory().some(e=>e.date===window.__today()); };
 
@@ -380,12 +361,7 @@ window.__activeGoal=function(key,entryStart,current){
 };
 /* ─── Test de marche 6 min (6MWT) — test LIBRE, hors bilan complet.
    L'utilisateur saisit sa distance quand il le fait ; l'app trace l'évolution. ─── */
-window.__WALK6_SEED=[
-  {date:'2025-09-14', m:358},
-  {date:'2025-11-09', m:381},
-  {date:'2026-01-25', m:402},
-  {date:'2026-04-05', m:430},
-];
+window.__WALK6_SEED=[];
 window.__readWalk6=function(){
   try{ const r=JSON.parse((window.localStorage&&localStorage.getItem('elan_walk6'))||'null'); if(r&&r.length!=null) return r; }catch(e){}
   return (window.__WALK6_SEED||[]).slice();
@@ -422,11 +398,12 @@ window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStor
 window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans'];
 window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
-  const bil=(window.ED&&window.ED.bilans)||[]; const last=bil[bil.length-1]||{}; const first=bil[0]||{};
+  if(!b||!b.done) return [];   // pas d'objectifs tant que le test d'entrée n'est pas fait
+  const bil=window.__readBilans(); const last=bil[bil.length-1]||{}; const first=bil[0]||{};
   const t=(b&&b.tests)||{};
   const startWall=t.wallSit!=null?t.wallSit:(first.sts!=null?first.sts:20);
   const startBal=(t.balanceL!=null||t.balanceR!=null)?Math.max(t.balanceL||0,t.balanceR||0):(first.balance!=null?first.balance:10);
@@ -453,10 +430,32 @@ window.__longTermGoals=function(){
   return goals;
 };
 
+/* ═══ DONNÉES RÉELLES POUR LES STATS (remplacent les données de démo) ═══ */
+/* Journal de forme quotidienne — alimente la courbe « Forme du jour · 14 j ». */
+window.__readFormeLog=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_forme_log'))||'[]'); }catch(e){ return []; } };
+window.__pushForme=function(forme){ const log=window.__readFormeLog(); const today=window.__today(); const f=log.filter(function(e){return e.date!==today;}); f.push({date:today,forme:Math.round(forme)}); const cut=new Date(Date.now()-180*86400000).toISOString().slice(0,10); const trimmed=f.filter(function(e){return e.date>cut;}).sort(function(a,b){return a.date<b.date?-1:1;}); try{ if(window.localStorage) localStorage.setItem('elan_forme_log',JSON.stringify(trimmed)); }catch(e){} return trimmed; };
+window.__formeHistory=function(n){ const v=window.__readFormeLog().map(function(e){return e.forme;}); return n?v.slice(-n):v; };
+
+/* Bilans mensuels enregistrés (tests fonctionnels). */
+window.__readBilans=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_bilans'))||'[]'); }catch(e){ return []; } };
+window.__saveBilan=function(entry){ const arr=window.__readBilans(); if(arr.length && arr[arr.length-1].month===entry.month) arr[arr.length-1]=entry; else arr.push(entry); try{ if(window.localStorage) localStorage.setItem('elan_bilans',JSON.stringify(arr)); }catch(e){} return arr; };
+
+/* Séances récentes — dérivées de l'historique réel (pour la liste « Récentes »). */
+window.__FR_DOW=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
+window.__recentSessions=function(n){ n=n||6; const hist=window.__sessHistory().slice().sort(function(a,b){return a.date<b.date?1:-1;}); const today=window.__today(); const yday=new Date(Date.now()-86400000).toISOString().slice(0,10); return hist.slice(0,n).map(function(e){ var label; if(e.date===today) label='Aujourd’hui'; else if(e.date===yday) label='Hier'; else { var d=new Date(e.date+'T00:00'); label=window.__FR_DOW[d.getDay()]+' '+d.getDate(); } return {date:label, title:e.title||'Séance', duration:e.duration||0, forme:e.forme!=null?e.forme:0}; }); };
+
+/* Répartition par zone — comptée sur l'historique réel (zones de chaque séance). */
+window.__sessAreas=function(e){ if(e.areas&&e.areas.length) return e.areas; return e.region?[e.region]:[]; };
+window.__focusAreas=function(days){ days=days||30; const cut=new Date(Date.now()-days*86400000).toISOString().slice(0,10); const hist=window.__sessHistory().filter(function(e){return e.date>cut;}); const counts={}; hist.forEach(function(e){ window.__sessAreas(e).forEach(function(a){ counts[a]=(counts[a]||0)+1; }); }); return Object.keys(counts).map(function(k){return {key:k,count:counts[k]};}).sort(function(a,b){return b.count-a.count;}); };
+window.__focusWeeks=function(){ const hist=window.__sessHistory(); if(!hist.length) return []; const map={}; hist.forEach(function(e){ const k=window.__isoWeekKey(e.date); if(!map[k]) map[k]={key:k}; window.__sessAreas(e).forEach(function(a){ map[k][a]=(map[k][a]||0)+1; }); }); const keys=Object.keys(map).sort(); const last4=keys.slice(-4); return last4.map(function(k){ const o=Object.assign({},map[k]); o.label='S'+(k.split('W')[1]||''); return o; }); };
+/* Trophées calculés sur les données réelles. */
+window.__focusBadges=function(){ const streak=window.__streak(); const wkCut=new Date(Date.now()-7*86400000).toISOString().slice(0,10); const wkZones=new Set(); window.__sessHistory().filter(function(e){return e.date>wkCut;}).forEach(function(e){ window.__sessAreas(e).forEach(function(a){wkZones.add(a);}); }); const balCount=window.__sessHistory().filter(function(e){return window.__sessAreas(e).indexOf('balance')>=0;}).length; return [ {id:'streak',label:'Régularité',sub:streak+' jour'+(streak>1?'s':'')+' de suite',earned:streak>=3,progress:streak,total:3,color:'#F2602E',icon:'flame'}, {id:'allround',label:'Tout-terrain',sub:wkZones.size+' zones cette semaine',earned:wkZones.size>=5,progress:wkZones.size,total:5,color:'#2FBFA1',icon:'compass'}, {id:'balance',label:'Équilibriste',sub:balCount+' séances équilibre',earned:balCount>=15,progress:balCount,total:15,color:'#3A7FCC',icon:'activity'} ]; };
+
 /* ─── Récap périodique : hebdo (dimanche soir) + mensuel (1er du mois) ─── */
 window.__recapSeen=function(kind,key){ try{ return (window.localStorage&&localStorage.getItem('elan_recap_'+kind))===key; }catch(e){ return false; } };
 window.__markRecapSeen=function(kind,key){ try{ if(window.localStorage) localStorage.setItem('elan_recap_'+kind,key); }catch(e){} };
 window.__recapDue=function(){
+  if(window.__formeHistory().length<3) return null;   // pas de récap tant qu'il n'y a pas d'historique réel
   const now=new Date(); const day=now.getDay(), date=now.getDate(), hour=now.getHours();
   const mKey=now.getFullYear()+'-'+(now.getMonth()+1);
   if(date===1 && !window.__recapSeen('month',mKey)) return {kind:'month',key:mKey};
@@ -468,12 +467,8 @@ window.__bilanMonthKey=function(){ const n=new Date(); return n.getFullYear()+'-
 window.__bilanDoneThisMonth=function(){ try{ return (window.localStorage&&localStorage.getItem('elan_bilan_done'))===window.__bilanMonthKey(); }catch(e){ return false; } };
 window.__markBilanDone=function(){ try{ if(window.localStorage) localStorage.setItem('elan_bilan_done',window.__bilanMonthKey()); }catch(e){} };
 window.__bilanReminderDue=function(){ return !window.__bilanDoneThisMonth(); };
-/* Historique d'exemple (3 séances passées) pour illustrer la progression */
-(function(){ const day=86400000; const d=n=>new Date(Date.now()-n*day).toISOString().slice(0,10); const days=[21,14,7];
-  const S={'gym1-0':{reps:8,w:[20,22.5,25]},'gym1-1':{reps:8,w:[25,27.5,30]},'gym1-2':{reps:8,w:[12,14,15]},'gym1-3':{reps:10,w:[8,9,10]},'gym2-0':{reps:8,w:[40,45,50]},'gym2-1':{reps:8,w:[20,22.5,25]},'gym2-2':{reps:10,w:[25,27.5,30]},'gym2-3':{reps:20,w:[30,35,40]}};
-  const seed={}; Object.keys(S).forEach(id=>{ seed[id]=S[id].w.map((w,i)=>({date:d(days[i]),weight:w,reps:S[id].reps})); });
-  window.ED.gymSeed=seed;
-})();
+/* Pas de données d'exemple : l'app démarre vierge et se remplit à l'usage réel. */
+window.ED.gymSeed={};
 window.__mapExercise = function(ex, diff, ctx){
   ctx=ctx||{}; diff=diff||{};
   const tier=ctx.tier||'moderate'; const m=ctx.metrics||{};
@@ -1610,7 +1605,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{
       if(!allDone||summary) return;
       const before=window.__streak();
-      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||''))});
+      const __ci=window.__readCheckin(); const __forme=(__ci&&__ci.metrics)?window.__readiness(__ci.metrics).readiness:null;
+      const __areas=[...new Set((program.exercises||[]).filter(e=>e.phase!=='warmup'&&e.phase!=='cooldown').map(e=>e.area).filter(Boolean))];
+      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||'')), title:program.title||'Séance', duration:program.duration||0, areas:__areas, forme:__forme});
       const streak=window.__streak();
       const week=window.__weekDoneCount();
       const goal=4;
@@ -1844,7 +1841,21 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   const { RingChart, LineChart, BrandMark, AREA_LABELS, AREA_COLORS, C } = window.EC;
 
   function FocusBalance() {
-    const areas=[...window.ED.focusAreas].sort((a,b)=>b.count-a.count);
+    const areas=window.__focusAreas(30);
+    const order=['lower','balance','core','upper','proprioception','cardio','stretching'];
+    const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:20,boxShadow:C.sh};
+    if(!areas.length){
+      return (
+        <div style={{...card,padding:'18px 18px 20px',marginBottom:20}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            <span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Répartition · 30 j</span>
+          </div>
+          <h3 style={{fontFamily:'Georgia,serif',fontSize:19,fontWeight:600,color:C.ink,margin:'0 0 8px'}}>Tes zones travaillées</h3>
+          <p style={{fontSize:13,color:C.muted,lineHeight:1.5}}>Dès tes premières séances, Élan affichera ici la répartition de ton travail par zone (bas du corps, équilibre, gainage…) et veillera à l'équilibre.</p>
+        </div>
+      );
+    }
     const total=areas.reduce((s,a)=>s+a.count,0);
     const maxC=areas[0].count;
     const ideal=total/areas.length;
@@ -1852,9 +1863,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const balance=Math.round((1-dev)*100);
     const lvl=balance>=85?'Programme complet':balance>=70?'Bel équilibre':balance>=55?'En progression':'À diversifier';
     const top=areas[0], low=areas[areas.length-1];
-    const weeks=window.ED.focusWeeks;
-    const order=['lower','balance','core','upper','proprioception','cardio','stretching'];
-    const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:20,boxShadow:C.sh};
+    const weeks=window.__focusWeeks();
+    const badges=window.__focusBadges();
     return (
       <div style={{...card,padding:'18px 18px 20px',marginBottom:20}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
@@ -1888,12 +1898,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           <span style={{fontSize:12.5,color:C.body,lineHeight:1.5}}>Tu travailles surtout le <b style={{color:C.ink}}>{AREA_LABELS[top.key].toLowerCase()}</b>. La <b style={{color:C.ink}}>{AREA_LABELS[low.key].toLowerCase()}</b> reste en retrait — Élan ajoutera des exercices ciblés les prochaines semaines pour rééquilibrer.</span>
         </div>
+        {weeks.length>1 && (<>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10}}>
-          <span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Évolution · 4 semaines</span>
-          <span style={{fontSize:11,color:C.tealDk,fontWeight:600}}>proprio ↗</span>
+          <span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Évolution · {weeks.length} semaines</span>
         </div>
         <div style={{display:'flex',gap:10,alignItems:'flex-end',marginBottom:12}}>
-          {weeks.map(w=>{const tot=order.reduce((s,k)=>s+(w[k]||0),0);return(
+          {weeks.map(w=>{const tot=order.reduce((s,k)=>s+(w[k]||0),0)||1;return(
             <div key={w.label} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:6}}>
               <div style={{width:'100%',maxWidth:34,height:76,display:'flex',flexDirection:'column-reverse',borderRadius:7,overflow:'hidden',border:`1px solid ${C.line}`}}>
                 {order.map(k=>{const h=(w[k]||0)/tot*100;return h>0?<div key={k} style={{height:`${h}%`,background:AREA_COLORS[k]}}/>:null;})}
@@ -1904,8 +1914,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{display:'flex',flexWrap:'wrap',gap:'7px 12px',marginBottom:18}}>
           {order.map(k=>(<span key={k} style={{display:'flex',alignItems:'center',gap:5,fontSize:10.5,color:C.muted}}><span style={{width:8,height:8,borderRadius:2,background:AREA_COLORS[k]}}/>{AREA_LABELS[k]}</span>))}
         </div>
+        </>)}
         <div style={{display:'flex',gap:8}}>
-          {window.ED.badges.map(b=>(
+          {badges.map(b=>(
             <div key={b.id} style={{flex:1,textAlign:'center',background:b.earned?C.bg:'transparent',border:`1px solid ${b.earned?C.line:'rgba(14,81,74,0.07)'}`,borderRadius:14,padding:'12px 6px',opacity:b.earned?1:0.62}}>
               <div style={{width:38,height:38,borderRadius:'50%',margin:'0 auto 7px',display:'flex',alignItems:'center',justifyContent:'center',background:b.earned?b.color+'1f':'rgba(14,81,74,0.05)',border:`1px solid ${b.earned?b.color+'55':C.line}`}}>
                 {b.icon==='flame'&&<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={b.earned?b.color:C.faint} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4 4 5 4 9a4 4 0 0 1-8 0c0-1 .5-2 1-3 .5 2 2 2 2 2 1-2-1-4 1-8z"/></svg>}
@@ -2178,12 +2189,15 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   }
 
   function ProgressScreen({ onOpenBilan, bilanDone, onRedoBaseline, onResetAll }) {
-    const { recentSessions, formeHistory, bilans } = window.ED;
     const TESTS=window.ED.tests;
     const [tab,setTab]=React.useState('reg');
     const [showData,setShowData]=React.useState(false);
     const [manageTest,setManageTest]=React.useState(null);
     const [,forceTick]=React.useReducer(x=>x+1,0);
+    /* données 100% réelles (localStorage) */
+    const bilans=window.__readBilans();
+    const formeHistory=window.__formeHistory(14);
+    const recentSessions=window.__recentSessions(6);
     const lastB=bilans[bilans.length-1]||{}, prevB=bilans[bilans.length-2]||{};
     const testRows=TESTS.map(function(tt){
       const allPts=bilans.map(b=>({month:b.month,v:b[tt.key]})).filter(p=>p.v!=null);
@@ -2193,11 +2207,15 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       const prev=series.length>1?series[series.length-2]:null;
       return {...tt, allPts, pts, series, now, d:(now??0)-(prev??0)};
     });
-    const pctForme=Math.round((formeHistory[formeHistory.length-1]-formeHistory[0])/formeHistory[0]*100);
+    const fhFirst=formeHistory[0], fhLast=formeHistory[formeHistory.length-1];
+    const pctForme=(formeHistory.length>1&&fhFirst)?Math.round((fhLast-fhFirst)/fhFirst*100):0;
     const goals=window.__longTermGoals();
-    const streak=5, record=7, monthCount=14;        // repères (démo) — réels via __streak/__bestStreak
-    const isRecord=streak>=record;
+    const streak=window.__streak(), record=window.__bestStreak(), weekCount=window.__weekDoneCount();
+    const monthKey=(function(){ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); })();
+    const monthCount=[...new Set(window.__sessHistory().filter(e=>e.date.slice(0,7)===monthKey).map(e=>e.date))].length;
+    const isRecord=streak>0&&streak>=record;
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:20,boxShadow:C.sh};
+    const emptyCard={...card,padding:'22px 18px',textAlign:'center',color:C.muted,fontSize:13,lineHeight:1.5};
     const TABS=[['reg','Régularité'],['force','Force & objectifs'],['tests','Tests']];
     return (
       <div style={{minHeight:'100%',padding:'24px 24px'}}>
@@ -2222,37 +2240,43 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
         {tab==='reg'&&(<>
           <div style={{display:'flex',alignItems:'center',gap:18,marginBottom:20}}>
-            <RingChart value={4} max={7} size={124}/>
+            <RingChart value={weekCount} max={Math.max(4,weekCount)} size={124}/>
             <div style={{flex:1,display:'flex',flexDirection:'column',gap:12}}>
               <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.orange,lineHeight:1}}>{streak}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>jours de suite</div></div>
               <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.teal,lineHeight:1}}>{monthCount}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>séances ce mois</div></div>
             </div>
           </div>
-          {/* record */}
+          {/* record — seulement quand il y a une vraie série à montrer */}
+          {record>=2 && (
           <div style={{...card,padding:'14px 16px',marginBottom:20,display:'flex',alignItems:'center',gap:13,background:isRecord?'linear-gradient(135deg,#FFE9E0,#FFF4EF)':C.card,border:isRecord?'1px solid rgba(242,96,46,0.3)':`1px solid ${C.line}`}}>
             <div style={{width:42,height:42,borderRadius:12,background:isRecord?'rgba(242,96,46,0.16)':'rgba(224,138,11,0.12)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecord?C.orange:C.amber} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M5 9H3a2 2 0 0 1 0-4h2M19 9h2a2 2 0 0 0 0-4h-2"/></svg></div>
             <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>{isRecord?'Nouveau record de régularité !':'Record de régularité'}</div><div style={{fontSize:12.5,color:C.body,marginTop:1}}>{isRecord?`${streak} jours d'affilée — ton meilleur enchaînement.`:`Ta meilleure série : ${record} jours. Plus que ${record-streak} pour l'égaler !`}</div></div>
-          </div>
-          {/* Analyse IA */}
+          </div>)}
+          {/* Analyse IA — seulement avec assez de check-in réels */}
+          {formeHistory.length>=2 && (
           <div style={{background:'linear-gradient(135deg,rgba(47,191,161,0.12),rgba(47,191,161,0.04))',border:'1px solid rgba(47,191,161,0.25)',borderRadius:18,padding:'16px',marginBottom:20}}>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg>
               <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em'}}>Analyse Élan · IA</span>
             </div>
-            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Belle dynamique, <b style={{color:C.ink}}>{window.ED.user}</b>. Sur 14 jours ta forme moyenne grimpe de <b style={{color:C.ink}}>{formeHistory[0]} → {formeHistory[formeHistory.length-1]}</b> ({pctForme>0?'+':''}{pctForme}%), et sur la chaise au mur tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois. Tes jambes te portent plus loin, ça se voit.</p>
-          </div>
-          <div style={{...card,padding:'16px 14px 12px',marginBottom:20}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10,padding:'0 4px'}}><span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Forme du jour · 14 j</span><span style={{fontSize:12,color:C.tealDk,fontWeight:600}}>↗ en hausse</span></div>
-            <LineChart data={formeHistory} color={C.teal} height={92} dotsEvery={3}/>
-          </div>
+            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Sur tes <b style={{color:C.ink}}>{formeHistory.length}</b> derniers check-in, ta forme va de <b style={{color:C.ink}}>{fhFirst} → {fhLast}</b> ({pctForme>0?'+':''}{pctForme}%).{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> Et sur la chaise au mur, tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois.</>:''} {streak>=2?'Garde ce rythme — la régularité, c\'est ce qui fait progresser dans la SEP.':'Continue à enchaîner les séances pour voir la tendance se dessiner.'}</p>
+          </div>)}
+          {formeHistory.length>=2
+            ? <div style={{...card,padding:'16px 14px 12px',marginBottom:20}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10,padding:'0 4px'}}><span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Forme du jour · {formeHistory.length} j</span>{pctForme>0&&<span style={{fontSize:12,color:C.tealDk,fontWeight:600}}>↗ en hausse</span>}</div>
+                <LineChart data={formeHistory} color={C.teal} height={92} dotsEvery={Math.max(1,Math.round(formeHistory.length/5))}/>
+              </div>
+            : <div style={{...emptyCard,marginBottom:20}}>Ta courbe de forme apparaîtra ici dès tes premiers check-in du jour.</div>}
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',marginBottom:12}}>Récentes</p>
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {recentSessions.length
+            ? <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {recentSessions.map((s,i)=>(<div key={i} style={{...card,padding:'12px 14px',display:'flex',alignItems:'center',gap:12}}>
-              <div style={{width:36,height:36,borderRadius:'50%',background:s.forme>=70?'rgba(242,96,46,0.12)':'rgba(47,191,161,0.10)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${s.forme>=70?'rgba(242,96,46,0.25)':'rgba(47,191,161,0.22)'}`}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:500,color:s.forme>=70?C.orange:C.tealDk}}>{s.forme}</span></div>
-              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:500,color:C.ink}}>{s.title}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{s.date} · {s.duration} min</div></div>
+              <div style={{width:36,height:36,borderRadius:'50%',background:s.forme>=70?'rgba(242,96,46,0.12)':'rgba(47,191,161,0.10)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${s.forme>=70?'rgba(242,96,46,0.25)':'rgba(47,191,161,0.22)'}`}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:500,color:s.forme>=70?C.orange:C.tealDk}}>{s.forme||'·'}</span></div>
+              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:500,color:C.ink}}>{s.title}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{s.date}{s.duration?` · ${s.duration} min`:''}</div></div>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.teal} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
             </div>))}
           </div>
+            : <div style={emptyCard}>Aucune séance pour l'instant. Ta première séance terminée s'affichera ici.</div>}
         </>)}
 
         {tab==='force'&&(<>
@@ -2261,9 +2285,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <span style={{fontSize:13,fontWeight:600,color:C.ink}}>Tes objectifs long terme</span>
           </div>
           <p style={{fontSize:12.5,color:C.muted,lineHeight:1.5,marginBottom:16}}>Fixés depuis ton bilan de référence, suivis à chaque bilan mensuel.</p>
-          <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:24}}>
-            {goals.map(g=><GoalGauge key={g.key} g={g}/>)}
-          </div>
+          {goals.length
+            ? <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:24}}>
+                {goals.map(g=><GoalGauge key={g.key} g={g}/>)}
+              </div>
+            : <div style={{...emptyCard,marginBottom:24}}>Tes objectifs apparaîtront ici une fois ton <b style={{color:C.ink}}>test d'entrée</b> réalisé.</div>}
           <FocusBalance/>
           <StrengthProgress/>
         </>)}
@@ -2465,7 +2491,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   function BilanMensuel({ onClose, onSave }) {
     const monthShort = new Intl.DateTimeFormat('fr-FR',{month:'short'}).format(new Date()).replace('.','').replace(/^./,c=>c.toUpperCase());
     const prevRef = React.useRef(null);
-    if(prevRef.current===null){ const a=window.ED.bilans; let p={}; for(let i=a.length-1;i>=0;i--){ if(a[i].month!==monthShort){ p=a[i]; break; } } prevRef.current=p; }
+    if(prevRef.current===null){ const a=window.__readBilans(); let p={}; for(let i=a.length-1;i>=0;i--){ if(a[i].month!==monthShort){ p=a[i]; break; } } prevRef.current=p; }
     const prev = prevRef.current;
     const [step,setStep]=React.useState(0); // 0 intro · 1 sts · 2 pushup · 3 plank · 4 balance · 5 reach · résumé
     const [saved,setSaved]=React.useState(false);
@@ -2484,8 +2510,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     function save(){
       const m = monthShort;
       const entry={month:m, sts:res.sts, pushup:res.pushup, plank:res.plank, balance:res.balance, reach:res.reach};
-      const arr=window.ED.bilans;
-      if(arr.length && arr[arr.length-1].month===m) arr[arr.length-1]=entry; else arr.push(entry);
+      window.__saveBilan(entry);
       window.__markBilanDone();
       setSaved(true);
     }
@@ -2850,31 +2875,30 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   const MONTHS=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
   const WD=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
   const DOW=['L','M','M','J','V','S','D'];
-  const SESSION_TYPES=[
-    {title:'Équilibre & renfo', zones:['Équilibre','Bas du corps','Gainage']},
-    {title:'Séance complète',   zones:['Bas du corps','Haut du corps','Cardio']},
-    {title:'Séance douce',      zones:['Mobilité','Équilibre']},
-    {title:'Cardio léger',      zones:['Cardio','Endurance']},
-    {title:'Renfo jambes',      zones:['Bas du corps','Gainage']},
-  ];
-  const SCHED=new Set([1,2,4,6]);               // jours d'entraînement habituels : lun, mar, jeu, sam
-  function rnd(s){const x=Math.sin(s*127.1)*43758.5453;return x-Math.floor(x);}
-  /* Source unique : statut d'un jour (= ce que l'app enregistre en fin de séance validée) */
+  const SCHED=new Set([1,2,4,6]);               // jours d'entraînement habituels : lun, mar, jeu, sam (repères)
+  function __dkey(dt){ return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); }
+  /* Cache de l'historique réel (clé = date de séance) + date de démarrage (1er usage). */
+  let __smCache=null,__smLen=-1,__smStart=null;
+  function __refreshSM(){ const h=window.__sessHistory(); if(__smCache===null||__smLen!==h.length){ __smCache={}; h.forEach(function(e){ __smCache[e.date]=e; }); __smLen=h.length; const b=window.__readBaseline(); let s=(b&&b.date)||null; const ds=h.map(function(e){return e.date;}).sort(); if(ds.length&&(!s||ds[0]<s)) s=ds[0]; __smStart=s; } }
+  function sessMap(){ __refreshSM(); return __smCache; }
+  function sessStart(){ __refreshSM(); return __smStart; }
+  /* Statut RÉEL d'un jour : « fait » = une séance enregistrée ce jour-là. Pas de données inventées. */
   function statusFor(date){
     const dt=new Date(date); dt.setHours(0,0,0,0);
     const today=new Date(); today.setHours(0,0,0,0);
-    const y=dt.getFullYear(),m=dt.getMonth(),d=dt.getDate(),dow=dt.getDay();
-    const seed=y*10000+m*100+d, r=rnd(seed);
-    const sched=SCHED.has(dow), past=dt<today, isToday=dt.getTime()===today.getTime();
+    const d=dt.getDate(),dow=dt.getDay();
+    const past=dt<today, isToday=dt.getTime()===today.getTime();
+    const e=sessMap()[__dkey(dt)];
+    const sched=SCHED.has(dow);
+    const start=sessStart(); const beforeStart=start?(__dkey(dt)<start):true;  // avant le 1er usage : neutre, jamais « manqué »
     let status='none', info=null;
-    if(sched){ if(isToday) status='today'; else if(past) status=r<0.86?'done':'missed'; else status='planned'; }
-    else status=isToday?'today-rest':'rest';
-    if(status==='done'){
-      const t=SESSION_TYPES[Math.floor(rnd(seed+7)*SESSION_TYPES.length)];
-      info={...t, forme:40+Math.floor(rnd(seed+3)*55), duration:[15,20,25,30,38][Math.floor(rnd(seed+5)*5)]};
-    } else if(status==='planned'||status==='today'){
-      info={...SESSION_TYPES[Math.floor(rnd(seed+7)*SESSION_TYPES.length)]};
-    }
+    if(e){
+      status='done';
+      const zones=(e.areas&&e.areas.length)?e.areas.map(function(a){return AREA_LABELS[a]||a;}):[];
+      info={title:e.title||'Séance', zones:zones, forme:e.forme!=null?e.forme:0, duration:e.duration||0};
+    } else if(isToday){ status=sched?'today':'today-rest'; }
+    else if(past){ status=(sched&&!beforeStart)?'missed':'rest'; }
+    else { status=sched?'planned':'rest'; }
     return {d,dow,status,info,isToday};
   }
   function buildMonth(y,m){
@@ -2884,17 +2908,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     for(let d=1;d<=n;d++) cells.push(statusFor(new Date(y,m,d)));
     return {cells,n};
   }
-  /* série en cours : séances programmées réussies d'affilée (le repos ne casse pas la série) */
-  function currentStreak(){
-    let count=0; const dt=new Date(); dt.setHours(0,0,0,0);
-    for(let i=0;i<400;i++){ const s=statusFor(dt); if(s.status==='done') count++; else if(s.status==='missed') break; dt.setDate(dt.getDate()-1); }
-    return count;
-  }
-  function weekDone(){
-    const today=new Date(); today.setHours(0,0,0,0); const off=(today.getDay()+6)%7; let c=0;
-    for(let i=0;i<=off;i++){ const dt=new Date(today); dt.setDate(today.getDate()-i); if(statusFor(dt).status==='done') c++; }
-    return c;
-  }
+  function currentStreak(){ return window.__streak(); }
+  function weekDone(){ return window.__weekDoneCount(); }
   /* Heatmap 53 semaines — style « contributions » */
   function YearHeatmap(){
     const ref=React.useRef(null);
@@ -3017,8 +3032,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 <p style={{fontSize:13,color:C.muted,margin:0}}>{
                   selCell.status==='done'?`${selCell.info.title} · forme ${selCell.info.forme}/100 · ${selCell.info.duration} min`
                   :selCell.status==='missed'?'Séance manquée — tu peux la rattraper'
-                  :selCell.status==='today'?`Séance prévue : ${selCell.info.title}`
-                  :selCell.status==='planned'?`Séance prévue : ${selCell.info.title}`
+                  :selCell.status==='today'?'Séance prévue aujourd’hui'
+                  :selCell.status==='planned'?'Séance prévue'
                   :'Jour de repos'
                 }</p>
               </div>
@@ -3072,19 +3087,28 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 /* ─── Récap périodique (hebdo dim. soir · mensuel le 1er) — boosté IA, data réelle ─── */
 function RecapOverlay({ kind, onClose }) {
   const ED=window.ED, isWeek=kind==='week';
-  const fh=ED.formeHistory, bilans=ED.bilans;
+  const span=isWeek?7:14;
+  const fh=window.__formeHistory(span), bilans=window.__readBilans();
   const goals=window.__longTermGoals();
-  const sessions=isWeek?4:14, minutes=isWeek?92:318, streak=5;
-  const avgForme=Math.round(fh.slice(-(isWeek?7:14)).reduce((s,x)=>s+x,0)/(isWeek?7:14));
-  const bestForme=Math.max(...fh.slice(-(isWeek?7:14)));
+  const cut=new Date(Date.now()-span*86400000).toISOString().slice(0,10);
+  const hist=window.__sessHistory().filter(e=>e.date>cut);
+  const sessions=[...new Set(hist.map(e=>e.date))].length;
+  const minutes=hist.reduce((s,e)=>s+(e.duration||0),0);
+  const streak=window.__streak();
+  const avgForme=fh.length?Math.round(fh.reduce((s,x)=>s+x,0)/fh.length):0;
+  const bestForme=fh.length?Math.max(...fh):0;
   const lastB=bilans[bilans.length-1]||{}, prevB=bilans[bilans.length-2]||{};
-  const zones=[['Bas du corps',isWeek?6:21,'#12A38C'],['Équilibre',isWeek?4:15,'#3A7FCC'],['Gainage',isWeek?3:11,'#0E8FB0'],['Cardio',isWeek?2:8,'#9E6BC6']];
-  const zMax=Math.max(...zones.map(z=>z[1]));
+  const fa=window.__focusAreas(span).slice(0,4);
+  const ZC=(window.EC&&window.EC.AREA_COLORS)||{}, ZL=(window.EC&&window.EC.AREA_LABELS)||{};
+  const zones=fa.map(a=>[ZL[a.key]||a.key, a.count, ZC[a.key]||'#12A38C']);
+  const zMax=zones.length?Math.max(...zones.map(z=>z[1])):1;
+  const topZone=fa[0]?(ZL[fa[0].key]||fa[0].key).toLowerCase():'le bas du corps';
   const period=isWeek?'Ta semaine':'Ton mois';
   const dateLabel=isWeek?'Récap hebdo · dimanche soir':`Récap mensuel · ${ED.monthLabel}`;
+  const goal0=goals[0];
   const narrative=isWeek
-    ? <>Belle semaine, <b style={{color:C.ink}}>{ED.user}</b> — <b style={{color:C.ink}}>{sessions} séances</b> bouclées et une forme moyenne de <b style={{color:C.ink}}>{avgForme}/100</b> (pic à {bestForme}). Tu as surtout travaillé le <b style={{color:C.ink}}>bas du corps</b> et l'<b style={{color:C.ink}}>équilibre</b>. Ta série tient à <b style={{color:C.ink}}>{streak} jours</b> : garde ce rythme, c'est exactement la régularité qui fait progresser dans la SEP.</>
-    : <>Quel mois, <b style={{color:C.ink}}>{ED.user}</b> ! <b style={{color:C.ink}}>{sessions} séances</b> et surtout de vrais progrès mesurés : la chaise au mur passe de <b style={{color:C.ink}}>{prevB.sts}→{lastB.sts}s</b>, l'équilibre de <b style={{color:C.ink}}>{prevB.balance}→{lastB.balance}s</b>. Tu es à <b style={{color:C.ink}}>{goals[0].pct}%</b> de ton objectif « chaise au mur ». Ton corps répond — on continue sur cette lancée.</>;
+    ? <>Belle semaine, <b style={{color:C.ink}}>{ED.user}</b> — <b style={{color:C.ink}}>{sessions} séance{sessions>1?'s':''}</b> bouclée{sessions>1?'s':''}{fh.length?<> et une forme moyenne de <b style={{color:C.ink}}>{avgForme}/100</b> (pic à {bestForme})</>:''}. {topZone&&<>Tu as surtout travaillé <b style={{color:C.ink}}>{topZone}</b>. </>}Ta série tient à <b style={{color:C.ink}}>{streak} jour{streak>1?'s':''}</b> : garde ce rythme, c'est exactement la régularité qui fait progresser dans la SEP.</>
+    : <>Quel mois, <b style={{color:C.ink}}>{ED.user}</b> ! <b style={{color:C.ink}}>{sessions} séance{sessions>1?'s':''}</b> ce mois-ci.{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> De vrais progrès mesurés : la chaise au mur passe de <b style={{color:C.ink}}>{prevB.sts}→{lastB.sts}s</b>.</>:''}{goal0?<> Tu es à <b style={{color:C.ink}}>{goal0.pct}%</b> de ton objectif « {goal0.label.toLowerCase()} ».</>:''} On continue sur cette lancée.</>;
   return (
     <div className="scroll" style={{position:'absolute',inset:0,zIndex:230,background:isWeek?`linear-gradient(180deg,#D7EEE8,${C.bg} 34%)`:`linear-gradient(180deg,#FBE2D7,${C.bg} 34%)`}}>
       <div style={{minHeight:'100%',padding:'22px 24px 40px'}}>
@@ -3147,7 +3171,7 @@ function reminderMessage() {
   const hist=window.__sessHistory?window.__sessHistory():[];
   let daysSince=1;
   if(hist.length){ const last=hist.map(e=>e.date).sort().pop(); const d=Math.round((Date.now()-new Date(last).getTime())/86400000); if(d>=0&&d<60) daysSince=d; }
-  const streak=(window.__streak&&window.__streak())||5;
+  const streak=(window.__streak&&window.__streak())||0;
   const day=new Date().getDay();
   if(heat>=7) return {t:'La fraîcheur revient',b:'La chaleur retombe le soir — c’est le bon moment pour bouger au frais, sans forcer.'};
   if(daysSince>=3) return {t:'On se retrouve ?',b:`${daysSince} jours sans séance — reprends tout en douceur, juste 10 minutes suffisent.`};
