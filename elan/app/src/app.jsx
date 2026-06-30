@@ -614,6 +614,22 @@ window.__recentLoadFactor = function(){ let f=0; const W={faible:0.12,moyen:0.28
   return f; };
 
 window.__formeTarget = function(tier){ return tier==='low'?2 : tier==='high'?4 : 3; };
+/* Coût d'effort d'un exercice (réf : d3 / charge moyenne / 3×10 / bilatéral = 1.0).
+   Volume de BASE (séries×reps authored) — le nombre d'exos ne dépend pas du niveau ; la dose, si. */
+window.__exCost = function(ex){
+  const dW={1:0.6,2:0.8,3:1.0,4:1.3,5:1.6}[ex.difficulty||3]||1.0;
+  const lW={faible:0.85,moyen:1.0,eleve:1.3}[ex.load||'moyen']||1.0;
+  let work; if(ex.unit==='time') work=(ex.sets||1)*(ex.sec||30)/90; else if(ex.unit==='min') work=(ex.min||10)/12; else work=(ex.sets||2)*(ex.reps||10)/30;
+  const vW=Math.sqrt(Math.max(0.25, work));            // volume amorti (racine)
+  const sW=(ex.side==='each')?1.5:1.0;                 // unilatéral = les deux côtés
+  return Math.max(0.45, dW*lW*vW*sW);                  // plancher : tout exo a un coût mini (évite les listes interminables)
+};
+/* Budget d'effort de la séance — monte avec la forme du matin, baisse le lendemain d'une grosse séance */
+window.__sessionBudget = function(metrics, recentLoad){
+  const { readiness } = window.__readiness(metrics);
+  const rl = recentLoad!=null ? recentLoad : (window.__recentLoadFactor?window.__recentLoadFactor():0);
+  return Math.max(2.8, 1.8 + 4.2*(readiness/100) - 1.2*rl);
+};
 /* Repos ciblé par jour de semaine (jours de salle) — clé = jour (0=dim … 6=sam), valeur = axes à éviter.
    Défaut : mardi → pas de force du haut du corps (avant la salle « haut » du mercredi) ;
             samedi & dimanche → pas de force du bas du corps. */
@@ -700,35 +716,35 @@ window.generateProgram = function(metrics, context){
   const topTies = ranked.filter(r=>r.sc>=bestSc-5).map(r=>r.a);
   const arche = __rotate(topTies, seed)[0] || (ranked[0]&&ranked[0].a) || __ARCHES[3];
 
-  /* ── COMPOSITION selon l'archétype ── */
-  let N = tier==='low'?3 : tier==='high'?5 : 4;
-  if(fatigue>=8) N=Math.max(3,N-1);
-  if(energy>=9 && fatigue<=3 && !arche.gentle) N=Math.min(6,N+1);
-  if(arche.gentle) N=Math.min(N,3);
-
+  /* ── COMPOSITION par BUDGET d'effort : séance dure → moins d'exos ; légère → plus, pour tout couvrir.
+     Le budget monte avec la forme du matin ; chaque exo « coûte » selon difficulté/charge/volume/côté. ── */
+  const recentLoad = window.__recentLoadFactor();
   const used=new Set();
   const usedPatterns=new Set();
   const scoreCtx={ tier, metrics, exAge, priorities:window.__userPriorities(), deficit:window.__axisDeficit(), recovery:window.__muscleRecovery(), formeTarget:window.__formeTarget(tier), usedPatterns, blockedAxes:window.__blockedAxesToday() };
-  const scorePick = (cands, count) => {
-    const scored=__rotate(cands.filter(e=>!used.has(e.name) && window.__exAllowed(e,scoreCtx)), seed)
-      .map(e=>({e,sc:window.__scoreExercise(e,scoreCtx)})).sort((a,b)=>b.sc-a.sc);
-    const out=[]; for(const r of scored){ if(out.length>=count) break; out.push(r.e); used.add(r.e.name); if(r.e.pattern) usedPatterns.add(r.e.pattern); }
-    return out;
-  };
-  const pick = (zone, count) => scorePick(byZone(zone), count);
+  const scoredZone = z => __rotate(byZone(z).filter(e=>window.__exAllowed(e,scoreCtx)), seed)
+    .map(e=>({e,sc:window.__scoreExercise(e,scoreCtx)})).sort((a,b)=>b.sc-a.sc).map(r=>r.e);
+  const scoredPool = pool => __rotate(pool.filter(e=>window.__exAllowed(e,scoreCtx)), seed)
+    .map(e=>({e,sc:window.__scoreExercise(e,scoreCtx)})).sort((a,b)=>b.sc-a.sc).map(r=>r.e);
 
   const zoneA=arche.zones[0]; const zoneB=(arche.zones[1] && zoneHas(arche.zones[1])) ? arche.zones[1] : null;
-  let blocks=[];
-  if(zoneB){
-    const nA = arche.order==='alt' ? Math.ceil(N/2) : Math.ceil(N*0.6);   // alt = split équilibré → vraie alternance
-    const nB = N - nA;
-    const A=pick(zoneA,nA), B=pick(zoneB,nB);
-    if(arche.order==='alt'){ const out=[]; const m=Math.max(A.length,B.length); for(let i=0;i<m;i++){ if(A[i])out.push(A[i]); if(B[i])out.push(B[i]); } blocks=out; }
-    else blocks=A.concat(B);
-  } else { blocks=pick(zoneA,N); }
-  if(blocks.length<N){ for(const ex of pick('lower', N-blocks.length)) blocks.push(ex); }      // biais jambes
-  if(blocks.length<N){ for(const ex of scorePick(mainsAll, N-blocks.length)) blocks.push(ex); } // complète sur tout le pool, scoré
-  if(blocks.length<N){ for(const ex of __rotate(mainsAll,seed).sort((p,q)=>exAge(q.id)-exAge(p.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } } } // dernier recours : jamais de séance vide
+  const listA=scoredZone(zoneA), listB=zoneB?scoredZone(zoneB):[];
+  let ordered=[];
+  if(zoneB && arche.order==='alt'){ const m=Math.max(listA.length,listB.length); for(let i=0;i<m;i++){ if(listA[i])ordered.push(listA[i]); if(listB[i])ordered.push(listB[i]); } }
+  else ordered=listA.concat(listB);
+  // compléments (biais jambes, puis tout le pool scoré) + dernier recours sans gating (jamais de séance vide)
+  ordered=ordered.concat(scoredZone('lower'), scoredPool(mainsAll), __rotate(mainsAll, seed));
+
+  const budget = window.__sessionBudget(metrics, recentLoad);
+  const MINEX=3, MAXEX=7;
+  let blocks=[]; let acc=0;
+  for(const ex of ordered){
+    if(used.has(ex.name)) continue;
+    if(blocks.length>=MAXEX) break;
+    if(blocks.length>=MINEX && acc>=budget) break;     // budget atteint (min 3 garanti)
+    blocks.push(ex); used.add(ex.name); if(ex.pattern) usedPatterns.add(ex.pattern); acc+=window.__exCost(ex);
+  }
+  const sessionCost=+acc.toFixed(2);
 
   /* Releveur du pied (réparti 2×/semaine) */
   if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
@@ -741,7 +757,6 @@ window.generateProgram = function(metrics, context){
   const cools = __rotate(cooldowns, seed+3);
   const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
-  const recentLoad = window.__recentLoadFactor();
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
   const duration = __sessionDuration(seq);
   const intensity = (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
@@ -765,11 +780,14 @@ window.generateProgram = function(metrics, context){
   reasons.push({t:'Structure respectée', d:arche.order==='alt'?'échauffement, travail en alternance, puis retour au calme.':'échauffement, travail ciblé, puis retour au calme.'});
   if(hasDorsi) reasons.push({t:'Releveur du pied', d:'tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
   if(scoreCtx.blockedAxes && scoreCtx.blockedAxes.length){ const AXLAB={'force-haut':'la force du haut du corps','force-bas':'la force des jambes','force-tronc':'le gainage'}; const lbl=scoreCtx.blockedAxes.map(a=>AXLAB[a]||a).join(', '); reasons.push({t:'Repos ciblé (jour de salle)', d:`aujourd’hui j’évite ${lbl} pour te garder frais avant ta séance en salle.`}); }
+  const __avgCost = blocks.length ? sessionCost/blocks.length : 1;
+  if(__avgCost>=1.35) reasons.push({t:`Séance resserrée (${blocks.length} exercices)`, d:'les exercices du jour sont exigeants — j’en mets moins pour ne pas surcharger.'});
+  else if(__avgCost<=0.8) reasons.push({t:`Séance étoffée (${blocks.length} exercices)`, d:'les exercices sont légers aujourd’hui — j’en ajoute pour couvrir davantage de zones.'});
   if(Object.keys(scoreCtx.recovery).length) reasons.push({t:'Récupération musculaire', d:'certains muscles sollicités récemment (ou en salle) récupèrent encore — je les épargne aujourd’hui et je rallonge un peu les repos.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
 
-  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, targets:progTargets, muscles:progMuscles, load:progLoad, modules:null, moduleEndIdx:null };
+  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, targets:progTargets, muscles:progMuscles, load:progLoad, effortBudget:+budget.toFixed(1), effortCost:sessionCost, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
