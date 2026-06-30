@@ -1388,6 +1388,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const resume=window.__resumableSession();
     const [open,setOpen]=React.useState(null);
     const [sheet,setSheet]=React.useState(null);
+    const [whyOpen,setWhyOpen]=React.useState(false);
     const r=program.readiness, rc=r>=70?C.orange:r>=42?C.teal:'#9DB0AB';
     const meta={background:C.card,border:`1px solid ${C.line}`,borderRadius:12,padding:'8px 10px',boxShadow:C.sh};
     return (
@@ -1421,14 +1422,17 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <span style={{...meta}}><span style={{fontSize:10,color:C.muted}}>Exercices </span><span style={{fontFamily:"'DM Mono',monospace",fontSize:14,color:C.ink}}>{program.exercises.length}</span></span>
           </div>
         </div>
-        <div style={{background:C.tint,border:'1px solid rgba(47,191,161,0.22)',borderRadius:18,padding:'16px 16px 14px',marginBottom:20}}>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+        <div style={{background:C.tint,border:'1px solid rgba(47,191,161,0.22)',borderRadius:18,padding:whyOpen?'16px 16px 14px':'12px 16px',marginBottom:20}}>
+          <button onClick={()=>setWhyOpen(o=>!o)} aria-expanded={whyOpen} style={{display:'flex',alignItems:'center',gap:8,width:'100%',background:'none',border:0,padding:0,cursor:'pointer',textAlign:'left'}}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg>
-            <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em'}}>Pourquoi cette séance</span>
-          </div>
-          <div style={{display:'flex',flexDirection:'column',gap:9}}>
+            <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em',flex:1}}>Pourquoi cette séance</span>
+            {!whyOpen&&<span style={{fontSize:11,color:C.tealDk,opacity:0.7}}>{program.reasons.length} points</span>}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:whyOpen?'rotate(180deg)':'none',transition:'transform 0.18s',flexShrink:0}}><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          {whyOpen&&(
+          <div style={{display:'flex',flexDirection:'column',gap:9,marginTop:12}}>
             {program.reasons.map((rs,i)=>(<div key={i} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{marginTop:6,width:5,height:5,borderRadius:'50%',background:C.teal,flexShrink:0}}/><span style={{fontSize:13,lineHeight:1.45,color:C.body}}><b style={{color:C.ink,fontWeight:600}}>{rs.t}</b> — {rs.d}</span></div>))}
-          </div>
+          </div>)}
         </div>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:12}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',margin:0}}>Ton programme</p>
