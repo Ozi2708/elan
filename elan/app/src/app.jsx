@@ -194,7 +194,6 @@ window.__lastStrength=function(exId){ const m=window.__mergedStrength(exId); ret
 /* ─── Lever de chaise : journal daté + moyenne glissante 7 jours ─── */
 window.__stsLog=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_sts_log'))||'[]'); }catch(e){ return []; } };
 window.__stsPush=function(reps){ const log=window.__stsLog(); const today=new Date().toISOString().slice(0,10); const f=log.filter(e=>e.date!==today); f.push({date:today,reps}); f.sort((a,b)=>a.date<b.date?-1:1); try{ if(window.localStorage) localStorage.setItem('elan_sts_log',JSON.stringify(f)); }catch(e){} return f; };
-window.__sts7=function(excludeToday){ const log=window.__stsLog(); const today=new Date().toISOString().slice(0,10); const cut=new Date(Date.now()-7*86400000).toISOString().slice(0,10); const xs=log.filter(e=>e.date>cut && (!excludeToday||e.date!==today)); if(!xs.length) return null; return {mean:Math.round(xs.reduce((s,e)=>s+e.reps,0)/xs.length*10)/10, n:xs.length}; };
 
 /* ─── Progression hebdomadaire : niveau acquis par exercice (staircase clinique SEP) ─── */
 window.__exMax=6;
@@ -1677,7 +1676,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [running,setRunning]=React.useState(false);
     const [remaining,setRemaining]=React.useState(0);
     const [warmStep,setWarmStep]=React.useState(0);   // étape courante d'un échauffement décomposé (5 × 1 min)
-    const [side,setSide]=React.useState('left');
+    const [side,setSide]=React.useState(()=>window.__affectedSide&&window.__affectedSide()==='d'?'right':'left');
     const sideRef=React.useRef('left'); sideRef.current=side;
     React.useEffect(()=>{ if(!allDone) window.__saveSessionState({exIdx,setNum,done:[...done]}); },[exIdx,setNum,done,allDone]);
     const fired=React.useRef(false);
@@ -1694,6 +1693,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const isEach = !ex.weighted && ex.side==='each';
     const fem = /jambe|main/.test(ex.sideLabel||'');
     const sideCap = ex.sideLabel ? (ex.sideLabel.charAt(0).toUpperCase()+ex.sideLabel.slice(1)) : 'Côté';
+    /* On commence par le côté le plus atteint (le plus faible travaille à tête reposée) — cohérent avec la consigne. */
+    const firstSide = window.__affectedSide && window.__affectedSide()==='d' ? 'right' : 'left';
+    const secondSide = firstSide==='left' ? 'right' : 'left';
     const sideHuman = side==='left' ? 'gauche' : (fem?'droite':'droit');
     const isTimed=ex.workSec>0;
     /* Échauffement décomposé : la description « 1 min … → 1 min … » devient autant de sous-minuteurs enchaînés. */
@@ -1759,15 +1761,15 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     },[remaining,running,phase,warmStep]);
 
     function completeSet(){
-      if(isEach && sideRef.current==='left'){ restKindRef.current='side'; setPhase('rest'); return; }
+      if(isEach && sideRef.current===firstSide){ restKindRef.current='side'; setPhase('rest'); return; }
       if(setNum<sets){ restKindRef.current='set'; setPhase('rest'); }
       else if(exIdx<exs.length-1 && restSec>0){ restKindRef.current='next'; setPhase('rest'); }
       else { advance(); }
     }
     function endRest(){
-      if(restKindRef.current==='side'){ setSide('right'); setPhase('work'); }
+      if(restKindRef.current==='side'){ setSide(secondSide); setPhase('work'); }
       else if(restKindRef.current==='next'){ advance(); }
-      else { setSide('left'); setPhase('work'); setSetNum(n=>n+1); }
+      else { setSide(firstSide); setPhase('work'); setSetNum(n=>n+1); }
     }
     function advance(){
       if(ex.weighted){ window.__logStrength(ex.id, ex.name, ex.sets, loadW, loadR); }
@@ -1777,11 +1779,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         if(out!=='easy'&&out!=='hard') window.__logSession(ex.id,'ok',ex.area,program.tier);
       }
       setDone(d=>{const n=new Set(d);n.add(exIdx);return n;});
-      setSide('left');
+      setSide(firstSide);
       if(exIdx<exs.length-1){ setExIdx(i=>i+1); setSetNum(1); setPhase('work'); }
       else { window.__clearSessionState(); setAllDone(true); }
     }
-    function jump(i){ if(i<0||i>exs.length-1) return; setExIdx(i); setSetNum(1); setPhase('work'); setSide('left'); }
+    function jump(i){ if(i<0||i>exs.length-1) return; setExIdx(i); setSetNum(1); setPhase('work'); setSide(firstSide); }
     const startWork=()=>{ unlockAudio(); setRunning(true); };
     const nextWarmStep=()=>{ fired.current=false; if(warmStep<warmSteps.length-1){ setWarmStep(s=>s+1); setRemaining(stepDur); } else { setRunning(false); completeSet(); } };
 
@@ -1892,7 +1894,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                     <span style={{display:'inline-flex',alignItems:'center',gap:8,background:'rgba(47,191,161,0.10)',border:'1px solid rgba(47,191,161,0.30)',borderRadius:99,padding:'6px 8px 6px 13px',fontSize:13,fontWeight:600,color:C.tealDk,whiteSpace:'nowrap'}}>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
                       {sideCap} {sideHuman}
-                      <span style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:99,padding:'2px 8px',color:C.muted,fontWeight:500,fontFamily:"'DM Mono',monospace",fontSize:11}}>{side==='left'?'1ᵉʳ':'2ᵉ'}</span>
+                      <span style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:99,padding:'2px 8px',color:C.muted,fontWeight:500,fontFamily:"'DM Mono',monospace",fontSize:11}}>{side===firstSide?'1ᵉʳ':'2ᵉ'}</span>
                     </span>
                   )}
                 </div>
@@ -1963,7 +1965,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.08em',textTransform:'uppercase'}}>{isSideRest?'Change de côté':isNextRest?'Transition · récupération':'Repos'}</span>
                 {isSideRest ? (<>
                   <p style={{fontSize:13,color:C.muted,marginTop:8}}>Même exercice, autre côté</p>
-                  <p style={{fontFamily:'Georgia,serif',fontSize:21,fontWeight:600,color:C.ink,marginTop:2,lineHeight:1.2}}>{sideCap} {fem?'droite':'droit'}</p>
+                  <p style={{fontFamily:'Georgia,serif',fontSize:21,fontWeight:600,color:C.ink,marginTop:2,lineHeight:1.2}}>{sideCap} {secondSide==='left'?'gauche':(fem?'droite':'droit')}</p>
                   <p style={{fontSize:12.5,color:C.muted,marginTop:3}}>installe-toi, ça redémarre tout seul</p>
                 </>) : isNextRest&&nextEx ? (<>
                   <p style={{fontSize:13,color:C.muted,marginTop:8}}>Prochain exercice</p>
