@@ -93,7 +93,7 @@ window.EQUIP = [
 ];
 
 window.ED = {
-  user: 'Val',
+  get user(){ return window.__profileName?window.__profileName():'Val'; },
   today: new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(new Date()),
   monthLabel: new Intl.DateTimeFormat('fr-FR',{month:'long'}).format(new Date()),
 
@@ -210,6 +210,16 @@ window.__saveBaseline=function(data){
   return rec;
 };
 window.__baselineLevel=function(area){ const b=window.__readBaseline(); if(!b||!b.levels) return 0; return b.levels[area]!=null?b.levels[area]:1; };
+
+/* ─── Réglages utilisateur (Profil) : prénom, côté atteint, surcharge symptômes/objectifs, jours de salle ─── */
+window.__readSettings=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_settings'))||'{}')||{}; }catch(e){ return {}; } };
+window.__saveSettings=function(patch){ const s=Object.assign(window.__readSettings(),patch||{}); try{ if(window.localStorage) localStorage.setItem('elan_settings',JSON.stringify(s)); }catch(e){} return s; };
+window.__profileName=function(){ const n=window.__readSettings().name; return (n&&String(n).trim())||'Val'; };
+window.__affectedSide=function(){ const s=window.__readSettings().affectedSide; return (s==='g'||s==='d')?s:null; }; // 'g' gauche | 'd' droite | null
+/* symptômes/objectifs effectifs : la surcharge des réglages prime sur le bilan initial (édition libre après coup) */
+window.__profileSymptoms=function(){ const st=window.__readSettings(); if(Array.isArray(st.symptoms)) return st.symptoms; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.symptoms)||[]; };
+window.__profileGoals=function(){ const st=window.__readSettings(); if(Array.isArray(st.goals)) return st.goals; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.goals)||[]; };
+window.__saveWeeklyBlocks=function(wb){ try{ if(window.localStorage) localStorage.setItem('elan_weekly_blocks',JSON.stringify(wb||{})); }catch(e){} };
 
 window.__exLevel=function(exId,area){ const p=window.__readProg()[exId];
   if(p&&p.level!=null){ const pen=window.__idlePenalty(p.lastDate); return Math.max(0,(p.level||0)-pen); }
@@ -413,7 +423,7 @@ window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStor
 window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
 window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
@@ -517,7 +527,10 @@ window.__mapExercise = function(ex, diff, ctx){
   else if(heat>=5) restMult=1.15;                     // chaleur modérée : un peu plus de récup
   if(recentLoad>0) restMult=Math.max(restMult, 1+0.35*recentLoad); // charge récente : repos rallongé
   o.level=level;
-  const sideSuffix = o.side==='each' ? ` par ${o.sideLabel}` : o.side==='alt' ? ' (en alternant)' : '';
+  const __aff = (o.side==='each' && window.__affectedSide) ? window.__affectedSide() : null;
+  if(__aff){ o.startSide = __aff==='g'?'gauche':'droite'; }
+  const startCue = __aff ? ` · commence par ton côté ${o.startSide}` : '';
+  const sideSuffix = (o.side==='each' ? ` par ${o.sideLabel}` : o.side==='alt' ? ' (en alternant)' : '') + startCue;
   if(ex.unit==='reps'){
     const st=__stepStrength(level, ex.sets||2, ex.reps||10);
     const sets=Math.max(1,Math.min(3, st.sets-dropSets));
@@ -590,9 +603,9 @@ window.__daysSince = function(d){ if(!d) return 999; const a=new Date(d); if(isN
 /* Symptômes/objectifs du bilan → axes priorisés (accent, jamais exclusion) */
 window.__GOAL_AXES = { 'Marcher plus longtemps':['endurance','pied-tombant','equilibre'], "Garder l'équilibre":['equilibre','proprioception'], 'Me renforcer':['force-bas','force-haut','force-tronc'], 'Réduire la fatigue':['endurance'], 'Gagner en souplesse':['mobilite','spasticite'] };
 window.__SYM_AXES = { fatigue:['endurance'], equilibre:['equilibre','proprioception'], spasticite:['mobilite','spasticite'], sensitif:['proprioception','coordination'], force:['force-bas','force-tronc'] };
-window.__userPriorities = function(){ const b=window.__readBaseline(); const p=(b&&b.profile)||{}; const set=new Set();
-  (p.symptoms||[]).forEach(s=>(window.__SYM_AXES[s]||[]).forEach(a=>set.add(a)));
-  (p.goals||[]).forEach(g=>(window.__GOAL_AXES[g]||[]).forEach(a=>set.add(a)));
+window.__userPriorities = function(){ const set=new Set();
+  window.__profileSymptoms().forEach(s=>(window.__SYM_AXES[s]||[]).forEach(a=>set.add(a)));
+  window.__profileGoals().forEach(g=>(window.__GOAL_AXES[g]||[]).forEach(a=>set.add(a)));
   return set; };
 
 /* Planchers hebdo (nb de séances touchant l'axe) — garantissent l'amélioration globale */
@@ -2263,8 +2276,22 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   function DataSettings({ onClose, onRedoBaseline, onResetAll }){
     const [confirm,setConfirm]=React.useState(null);
     const hasBaseline=window.__hasBaseline();
+    const st0=window.__readSettings();
+    const [name,setName]=React.useState(st0.name||'');
+    const [side,setSide]=React.useState(window.__affectedSide());
+    const [symptoms,setSymptoms]=React.useState(window.__profileSymptoms());
+    const [goals,setGoals]=React.useState(window.__profileGoals());
+    const [wb,setWb]=React.useState(()=>{ const w=window.__weeklyBlocks()||{}; const o={}; Object.keys(w).forEach(k=>{o[k]=[...(w[k]||[])];}); return o; });
+    const SY=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Troubles sensitifs'],['force','Faiblesse musculaire']];
+    const GO=['Marcher plus longtemps','Garder l\'équilibre','Me renforcer','Réduire la fatigue','Gagner en souplesse'];
+    const DAYS=[[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam'],[0,'Dim']];
+    const REST_AXES=[['force-bas','Jambes'],['force-haut','Haut du corps']];
     const sec={fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',fontWeight:600,margin:'22px 2px 10px'};
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
+    const SChip=({on,onClick,children})=>(<button onClick={onClick} style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:500,padding:'9px 14px',borderRadius:99,cursor:'pointer',background:on?'rgba(47,191,161,0.14)':C.bg,color:on?C.tealDk:C.body,border:`1px solid ${on?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{children}</button>);
+    function toggleArr(arr,setArr,v,saveKey){ const next=arr.includes(v)?arr.filter(x=>x!==v):[...arr,v]; setArr(next); window.__saveSettings({[saveKey]:next}); }
+    function toggleBlock(dayNum,axis){ setWb(prev=>{ const cur=prev[dayNum]||[]; const nextAxes=cur.includes(axis)?cur.filter(a=>a!==axis):[...cur,axis]; const next={...prev}; if(nextAxes.length) next[dayNum]=nextAxes; else delete next[dayNum]; window.__saveWeeklyBlocks(next); return next; }); }
+    const todayNum=new Date().getDay();
     return (
       <div className="scroll" style={{position:'absolute',inset:0,zIndex:240,background:C.bg}}>
         <div style={{minHeight:'100%',padding:'22px 22px 40px'}}>
@@ -2272,8 +2299,48 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <span style={{fontSize:11,color:C.muted,letterSpacing:'0.09em',textTransform:'uppercase',fontWeight:600}}>Réglages</span>
             <button onClick={onClose} style={{background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:99,width:34,height:34,cursor:'pointer',color:C.body,fontSize:17,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
           </div>
-          <h2 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',margin:'0 0 6px'}}>Tes données</h2>
-          <p style={{fontSize:13,color:C.muted,lineHeight:1.5}}>Tes données restent sur cet appareil. Tu peux refaire ton test d'entrée ou tout effacer ici.</p>
+          <h2 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',margin:'0 0 6px'}}>Profil &amp; réglages</h2>
+          <p style={{fontSize:13,color:C.muted,lineHeight:1.5}}>Ces réglages guident le choix de tes séances. Tes données restent sur cet appareil.</p>
+
+          <div style={sec}>Profil</div>
+          <div style={card}>
+            <label style={{display:'block',fontSize:13,color:C.body,fontWeight:600,marginBottom:7}}>Ton prénom</label>
+            <input value={name} onChange={e=>{ setName(e.target.value); window.__saveSettings({name:e.target.value}); }} placeholder="Val" maxLength={20}
+              style={{width:'100%',boxSizing:'border-box',border:`1px solid ${C.line}`,borderRadius:11,padding:'11px 13px',fontFamily:"'DM Sans',sans-serif",fontSize:15,color:C.ink,background:C.bg,outline:'none'}}/>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,margin:'18px 0 8px'}}>Ton côté le plus atteint</div>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.45,marginBottom:10}}>Pour les exercices un côté à la fois, Élan te fait commencer par ce côté (le plus faible travaille à tête reposée).</div>
+            <div style={{display:'flex',gap:8}}>
+              {[['g','Gauche'],['d','Droite'],[null,'Symétrique']].map(([v,lab])=>(
+                <button key={lab} onClick={()=>{ setSide(v); window.__saveSettings({affectedSide:v}); }} style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:600,padding:'10px 4px',borderRadius:11,cursor:'pointer',background:side===v?'rgba(47,191,161,0.14)':C.bg,color:side===v?C.tealDk:C.body,border:`1px solid ${side===v?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{lab}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={sec}>Mes priorités</div>
+          <div style={card}>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,marginBottom:4}}>Ce qui te gêne le plus en ce moment</div>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.45,marginBottom:10}}>Un accent, jamais une exclusion : Élan continue d'entretenir tout le corps, mais insiste un peu plus sur ces zones.</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:18}}>{SY.map(s=><SChip key={s[0]} on={symptoms.includes(s[0])} onClick={()=>toggleArr(symptoms,setSymptoms,s[0],"symptoms")}>{s[1]}</SChip>)}</div>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,marginBottom:10}}>Tes objectifs</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:8}}>{GO.map(g=><SChip key={g} on={goals.includes(g)} onClick={()=>toggleArr(goals,setGoals,g,'goals')}>{g}</SChip>)}</div>
+          </div>
+
+          <div style={sec}>Mes jours de salle</div>
+          <div style={card}>
+            <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5,marginBottom:14}}>Coche, le jour <b style={{color:C.body}}>précédant</b> ta salle, la zone à laisser au repos. Élan évitera alors de te faire travailler cette zone en force ce jour-là, pour t'y présenter frais.</div>
+            <div style={{display:'flex',flexDirection:'column',gap:9}}>
+              {DAYS.map(([dn,lab])=>{ const cur=wb[dn]||[]; const isToday=dn===todayNum; return (
+                <div key={dn} style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span style={{width:40,flexShrink:0,fontSize:12.5,fontWeight:isToday?700:500,color:isToday?C.tealDk:C.body}}>{lab}{isToday?' •':''}</span>
+                  <div style={{display:'flex',gap:7,flex:1}}>
+                    {REST_AXES.map(([ax,al])=>{ const on=cur.includes(ax); return (
+                      <button key={ax} onClick={()=>toggleBlock(dn,ax)} style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600,padding:'8px 4px',borderRadius:10,cursor:'pointer',background:on?'rgba(224,138,11,0.13)':C.bg,color:on?'#B26B05':C.muted,border:`1px solid ${on?'rgba(224,138,11,0.4)':C.line}`,transition:'all 140ms ease'}}>Repos {al.toLowerCase()}</button>
+                    );})}
+                  </div>
+                </div>
+              );})}
+            </div>
+          </div>
 
           <div style={sec}>Test d'entrée</div>
           <div style={card}>
