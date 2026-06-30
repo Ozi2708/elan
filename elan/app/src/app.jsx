@@ -502,6 +502,36 @@ window.__saveBilan=function(entry){ const arr=window.__readBilans(); if(arr.leng
 window.__FR_DOW=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
 window.__recentSessions=function(n){ n=n||6; const hist=window.__sessHistory().slice().sort(function(a,b){return a.date<b.date?1:-1;}); const today=window.__today(); const yday=new Date(Date.now()-86400000).toISOString().slice(0,10); return hist.slice(0,n).map(function(e){ var label; if(e.date===today) label='Aujourd’hui'; else if(e.date===yday) label='Hier'; else { var d=new Date(e.date+'T00:00'); label=window.__FR_DOW[d.getDay()]+' '+d.getDate(); } return {date:label, title:e.title||'Séance', duration:e.duration||0, forme:e.forme!=null?e.forme:0}; }); };
 
+/* ─── Rapport de suivi pour le médecin / kiné — agrège les données réelles (100% local) ─── */
+window.__buildClinicalReport=function(){
+  const SY={fatigue:'Fatigue',equilibre:'Troubles de l’équilibre',spasticite:'Raideur / spasticité',sensitif:'Troubles sensitifs',force:'Faiblesse musculaire'};
+  const AREA={lower:'Force des jambes',upper:'Haut du corps',core:'Gainage / tronc',balance:'Équilibre',proprioception:'Proprioception',stretching:'Souplesse',cardio:'Endurance',dorsi:'Releveur du pied'};
+  const b=window.__readBaseline()||{};
+  const hist=window.__sessHistory();
+  const days=[...new Set(hist.map(function(h){return h.date;}))].sort();
+  const start=days[0]||b.date||window.__today();
+  const forme=window.__readFormeLog();
+  const fvals=forme.map(function(e){return e.forme;});
+  const mean=function(a){return a.length?Math.round(a.reduce(function(s,c){return s+c;},0)/a.length):null;};
+  const d30=new Date(Date.now()-30*86400000).toISOString().slice(0,10);
+  const sess30=[...new Set(hist.filter(function(h){return h.date>=d30;}).map(function(h){return h.date;}))].length;
+  const walk=window.__readWalk6()||[];
+  const bilans=window.__readBilans()||[];
+  const b0=bilans[0]||null, bL=bilans[bilans.length-1]||null;
+  const lvl=(b.levels)||{};
+  const symptoms=window.__profileSymptoms().map(function(s){return SY[s]||s;});
+  const goals=window.__profileGoals();
+  const side=window.__affectedSide();
+  return {
+    name:window.__profileName(), date:window.__today(), periodStart:start,
+    profile:{ symptoms:symptoms, goals:goals, side:side==='g'?'Gauche':side==='d'?'Droite':'—' },
+    forme:{ series:forme.slice(-30), mean30:mean(fvals.slice(-30)), min30:fvals.slice(-30).length?Math.min.apply(null,fvals.slice(-30)):null, max30:fvals.slice(-30).length?Math.max.apply(null,fvals.slice(-30)):null, trend:(forme.length>=2)?(forme[forme.length-1].forme-forme[0].forme):null, n:forme.length },
+    walk6:{ series:walk, last:walk.length?walk[walk.length-1]:null, first:walk.length?walk[0]:null, delta:walk.length>=2?(walk[walk.length-1].m-walk[0].m):null },
+    tests:{ first:b0, last:bL, count:bilans.length },
+    levels:Object.keys(AREA).filter(function(k){return lvl[k]!=null;}).map(function(k){return {zone:AREA[k], level:lvl[k]};}),
+    adherence:{ total:days.length, last30:sess30, perWeek:days.length&&start?+(days.length/Math.max(1,(Date.now()-new Date(start).getTime())/(7*86400000))).toFixed(1):0, streak:window.__streak(), best:window.__bestStreak() },
+  };
+};
 /* Répartition par zone — comptée sur l'historique réel (zones de chaque séance). */
 window.__sessAreas=function(e){ if(e.areas&&e.areas.length) return e.areas; return e.region?[e.region]:[]; };
 window.__focusAreas=function(days){ days=days||30; const cut=new Date(Date.now()-days*86400000).toISOString().slice(0,10); const hist=window.__sessHistory().filter(function(e){return e.date>cut;}); const counts={}; hist.forEach(function(e){ window.__sessAreas(e).forEach(function(a){ counts[a]=(counts[a]||0)+1; }); }); return Object.keys(counts).map(function(k){return {key:k,count:counts[k]};}).sort(function(a,b){return b.count-a.count;}); };
@@ -2363,8 +2393,95 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
 
+  function ClinicalReport({ onClose }){
+    const R=window.__buildClinicalReport();
+    const fmtDate=(s)=>{ try{ const d=new Date(s+'T00:00'); return d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'}); }catch(e){ return s; } };
+    const Spark=({pts,color,h})=>{ h=h||34; if(!pts||pts.length<2) return <span style={{fontSize:11,color:C.faint}}>pas assez de données</span>; const w=180; const min=Math.min.apply(null,pts), max=Math.max.apply(null,pts); const rng=(max-min)||1; const step=w/(pts.length-1); const d=pts.map((v,i)=>`${i===0?'M':'L'}${(i*step).toFixed(1)},${(h-2-((v-min)/rng)*(h-4)).toFixed(1)}`).join(' '); return (<svg width={w} height={h} style={{display:'block'}}><path d={d} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>); };
+    const sec={fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:700,color:'#0E514A',margin:'18px 0 8px',borderBottom:'2px solid #2FBFA1',paddingBottom:4};
+    const th={textAlign:'left',fontSize:10.5,color:'#5b6b7a',fontWeight:600,padding:'4px 8px',borderBottom:'1px solid #dbe6e0'};
+    const td={fontSize:11.5,color:'#1c2433',padding:'4px 8px',borderBottom:'1px solid #eef3f0'};
+    const arrow=(d)=> d==null?'' : d>0?` ▲ +${d}` : d<0?` ▼ ${d}` : ' =';
+    const TKEYS=[['sts','Chaise au mur (s)'],['pushup','Pompes'],['plank','Gainage (s)'],['balance','Équilibre 1 pied (s)'],['reach','Flexion avant (cm)']];
+    return (
+      <div className="scroll" style={{position:'absolute',inset:0,zIndex:260,background:'#eef2f0'}}>
+        <div className="no-print" style={{position:'sticky',top:0,zIndex:2,display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,padding:'12px 16px',background:C.card,borderBottom:`1px solid ${C.line}`}}>
+          <button onClick={onClose} style={{background:C.bg,border:`1px solid ${C.line}`,borderRadius:99,width:36,height:36,cursor:'pointer',color:C.body,fontSize:18,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+          <span style={{fontSize:12,color:C.muted,fontWeight:600}}>Aperçu du rapport</span>
+          <button onClick={()=>window.print()} style={{display:'inline-flex',alignItems:'center',gap:7,background:C.teal,border:'none',color:'#fff',borderRadius:12,padding:'9px 16px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            Imprimer / PDF
+          </button>
+        </div>
+        <div style={{padding:'18px 14px 60px',display:'flex',justifyContent:'center'}}>
+        <div className="print-report" style={{width:'100%',maxWidth:680,background:'#fff',borderRadius:10,padding:'26px 30px',boxShadow:'0 8px 30px rgba(14,81,74,0.12)',color:'#1c2433',fontFamily:"'DM Sans',sans-serif"}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',borderBottom:'2px solid #0E514A',paddingBottom:12,marginBottom:6}}>
+            <div>
+              <div style={{fontFamily:'Georgia,serif',fontSize:24,fontWeight:600,color:'#0E514A',letterSpacing:'-0.01em'}}>él<span style={{color:'#12A189'}}>a</span>n</div>
+              <div style={{fontSize:13,color:'#5b6b7a',marginTop:2}}>Rapport de suivi — activité physique adaptée (SEP)</div>
+            </div>
+            <div style={{textAlign:'right',fontSize:11.5,color:'#5b6b7a'}}>
+              <div><b style={{color:'#1c2433'}}>{R.name}</b></div>
+              <div>Édité le {fmtDate(R.date)}</div>
+              <div>Suivi depuis le {fmtDate(R.periodStart)}</div>
+            </div>
+          </div>
+
+          <div style={sec}>Profil</div>
+          <table style={{width:'100%',borderCollapse:'collapse'}}><tbody>
+            <tr><td style={{...td,width:'40%',color:'#5b6b7a'}}>Symptômes prioritaires</td><td style={td}>{R.profile.symptoms.length?R.profile.symptoms.join(', '):'—'}</td></tr>
+            <tr><td style={{...td,color:'#5b6b7a'}}>Objectifs</td><td style={td}>{R.profile.goals.length?R.profile.goals.join(', '):'—'}</td></tr>
+            <tr><td style={{...td,color:'#5b6b7a'}}>Côté le plus atteint</td><td style={td}>{R.profile.side}</td></tr>
+          </tbody></table>
+
+          <div style={sec}>Forme générale (auto-évaluation quotidienne /100)</div>
+          <div style={{display:'flex',alignItems:'center',gap:20,flexWrap:'wrap'}}>
+            <div><Spark pts={R.forme.series.map(e=>e.forme)} color="#2FBFA1"/><div style={{fontSize:10,color:'#8a96a7',marginTop:2}}>30 derniers jours</div></div>
+            <div style={{fontSize:12,lineHeight:1.7}}>
+              <div>Moyenne 30 j : <b>{R.forme.mean30!=null?R.forme.mean30:'—'}</b></div>
+              <div>Amplitude : <b>{R.forme.min30!=null?R.forme.min30+' – '+R.forme.max30:'—'}</b></div>
+              <div>Tendance globale : <b style={{color:R.forme.trend>0?'#177e4c':R.forme.trend<0?'#c0392b':'#5b6b7a'}}>{R.forme.trend!=null?(R.forme.trend>0?'+':'')+R.forme.trend+' pts':'—'}</b></div>
+              <div style={{color:'#8a96a7',fontSize:10.5}}>{R.forme.n} mesures enregistrées</div>
+            </div>
+          </div>
+
+          <div style={sec}>Endurance — test de marche 6 minutes</div>
+          {R.walk6.series.length ? (<div style={{display:'flex',alignItems:'center',gap:20,flexWrap:'wrap'}}>
+            <div><Spark pts={R.walk6.series.map(e=>e.m)} color="#0E8FB0"/><div style={{fontSize:10,color:'#8a96a7',marginTop:2}}>{R.walk6.series.length} mesure(s)</div></div>
+            <div style={{fontSize:12,lineHeight:1.7}}>
+              <div>Dernière distance : <b>{R.walk6.last.m} m</b> <span style={{color:'#8a96a7'}}>({fmtDate(R.walk6.last.date)})</span></div>
+              {R.walk6.delta!=null&&<div>Évolution depuis le 1er test : <b style={{color:R.walk6.delta>0?'#177e4c':R.walk6.delta<0?'#c0392b':'#5b6b7a'}}>{(R.walk6.delta>0?'+':'')+R.walk6.delta} m</b></div>}
+            </div>
+          </div>) : <div style={{fontSize:11.5,color:'#8a96a7'}}>Aucun test de marche enregistré.</div>}
+
+          <div style={sec}>Tests fonctionnels mensuels</div>
+          {R.tests.last ? (<table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead><tr><th style={th}>Test</th><th style={th}>1er bilan {R.tests.first&&R.tests.first.month?'('+R.tests.first.month+')':''}</th><th style={th}>Dernier {R.tests.last.month?'('+R.tests.last.month+')':''}</th><th style={th}>Évolution</th></tr></thead>
+            <tbody>{TKEYS.map(([k,lab])=>{ const v0=R.tests.first?R.tests.first[k]:null; const vL=R.tests.last[k]; if(vL==null&&v0==null) return null; const d=(v0!=null&&vL!=null)?+(vL-v0).toFixed(1):null; return (<tr key={k}><td style={td}>{lab}</td><td style={td}>{v0!=null?v0:'—'}</td><td style={{...td,fontWeight:600}}>{vL!=null?vL:'—'}</td><td style={{...td,color:d>0?'#177e4c':d<0?'#c0392b':'#5b6b7a'}}>{d!=null?arrow(d):'—'}</td></tr>); })}</tbody>
+          </table>) : <div style={{fontSize:11.5,color:'#8a96a7'}}>Aucun bilan mensuel enregistré.</div>}
+
+          <div style={sec}>Niveau de départ par zone (bilan initial)</div>
+          {R.levels.length ? (<div style={{display:'flex',flexWrap:'wrap',gap:'6px 18px'}}>{R.levels.map(l=>(<div key={l.zone} style={{fontSize:11.5,minWidth:150}}>{l.zone} : <b>{['Très doux','Léger','Modéré','Bon','Soutenu','Avancé','Expert'][l.level]||l.level}</b></div>))}</div>) : <div style={{fontSize:11.5,color:'#8a96a7'}}>Bilan initial non réalisé.</div>}
+
+          <div style={sec}>Assiduité</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:'4px 22px',fontSize:12,lineHeight:1.7}}>
+            <div>Séances totales : <b>{R.adherence.total}</b></div>
+            <div>30 derniers jours : <b>{R.adherence.last30}</b></div>
+            <div>Fréquence : <b>{R.adherence.perWeek}/semaine</b></div>
+            <div>Série en cours : <b>{R.adherence.streak} j</b> <span style={{color:'#8a96a7'}}>(record {R.adherence.best} j)</span></div>
+          </div>
+
+          <div style={{marginTop:22,paddingTop:10,borderTop:'1px solid #dbe6e0',fontSize:9.5,color:'#8a96a7',lineHeight:1.5}}>
+            Document généré par Élan à partir des données saisies par l’utilisateur (auto-évaluations et tests à domicile). Il constitue une aide au suivi et ne remplace pas un examen clinique. Les principes appliqués s’inspirent de l’activité physique adaptée en SEP (priorité aux membres inférieurs, gestion de la fatigue et de la chaleur, progression prudente).
+          </div>
+        </div>
+        </div>
+      </div>
+    );
+  }
+
   function DataSettings({ onClose, onRedoBaseline, onResetAll }){
     const [confirm,setConfirm]=React.useState(null);
+    const [showReport,setShowReport]=React.useState(false);
     const hasBaseline=window.__hasBaseline();
     const st0=window.__readSettings();
     const [name,setName]=React.useState(st0.name||'');
@@ -2389,6 +2506,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const restDaysFor=ax=>[1,2,3,4,5,6,0].filter(d=>(derived[d]||[]).includes(ax)).map(d=>DLAB[d]);
     return (
       <div className="scroll" style={{position:'absolute',inset:0,zIndex:240,background:C.bg}}>
+        {showReport && <ClinicalReport onClose={()=>setShowReport(false)}/>}
         <div style={{minHeight:'100%',padding:'22px 22px 40px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
             <span style={{fontSize:11,color:C.muted,letterSpacing:'0.09em',textTransform:'uppercase',fontWeight:600}}>Réglages</span>
@@ -2396,6 +2514,13 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           </div>
           <h2 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',margin:'0 0 6px'}}>Profil &amp; réglages</h2>
           <p style={{fontSize:13,color:C.muted,lineHeight:1.5}}>Ces réglages guident le choix de tes séances. Tes données restent sur cet appareil.</p>
+
+          <div style={sec}>Suivi médical</div>
+          <button onClick={()=>setShowReport(true)} style={{width:'100%',display:'flex',alignItems:'center',gap:12,background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:16,padding:'15px 16px',cursor:'pointer',textAlign:'left',fontFamily:"'DM Sans',sans-serif"}}>
+            <div style={{width:40,height:40,borderRadius:11,background:C.tint,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg></div>
+            <div style={{flex:1}}><div style={{fontSize:14.5,fontWeight:600,color:C.ink}}>Rapport pour mon médecin</div><div style={{fontSize:12.5,color:C.muted,lineHeight:1.45,marginTop:2}}>Récap forme, marche 6 min, tests et assiduité — à imprimer ou enregistrer en PDF.</div></div>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
 
           <div style={sec}>Profil</div>
           <div style={card}>
