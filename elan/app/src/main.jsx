@@ -7,4 +7,5 @@ import './react-setup.js';
 import './index.css';
 import './data/exercises-data.js';
 import './data/exercises-extra.js';
+import './data/exercise-tags.js';
 import './app.jsx';

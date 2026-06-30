@@ -46,9 +46,23 @@
     if(m) ex.sets=+m[1];
   }
 
+  const TAGS = window.ED_TAGS || {};
+  function applyTags(ex){
+    const t = TAGS[ex.id]; if(!t) return;
+    if(t.region) ex.region = t.region;        // correction de zone (ex. assis-debout core→lower)
+    if(t.targets)    ex.targets = t.targets;
+    if(t.muscles)    ex.muscleTags = t.muscles;
+    if(t.pattern)    ex.pattern = t.pattern;
+    if(t.difficulty) ex.difficulty = t.difficulty;
+    if(t.load)       ex.load = t.load;
+    if(t.position)   ex.posTag = t.position;
+    if(t.flags)      ex.flags = t.flags;
+  }
+
   function normalize(ex){
     if(!ex||!ex.id) return;
     if(REGION_FIX[ex.id]) ex.region=REGION_FIX[ex.id];
+    applyTags(ex);                            // les tags peuvent re-corriger la region
     syncSets(ex);
     const s=deriveSide(ex);
     ex.side=s.side;
@@ -59,6 +73,11 @@
   (window.ED_GYM||[]).forEach(s=>(s.exercises||[]).forEach(normalize));
   (window.ED_WEEK||[]).forEach(s=>(s.exercises||[]).forEach(normalize));
   (window.ED_STRETCH||[]).forEach(normalize);
+  (window.ED_DORSI||[]).forEach(normalize);
+
+  /* Méta des séances salle (charge élevée, muscles travaillés) — pour planchers & récup */
+  const GT = window.ED_GYM_TAGS || {};
+  (window.ED_GYM||[]).forEach(s=>{ const t=GT[String(s.id)]; if(t){ s.regionTag=t.region; s.targets=t.targets; s.muscleTags=t.muscles; s.load=t.load; } });
 })();
 
 /* engine */
@@ -264,7 +283,8 @@ window.__logSessionDone=function(info){
   const today=new Date().toISOString().slice(0,10);
   const f=all.filter(e=>!(e.date===today && e.id===info.id));
   f.push({date:today,id:info.id,region:info.region||'',intent:info.intent||'',dorsi:!!info.dorsi,
-          title:info.title||'',duration:info.duration||0,areas:info.areas||[],forme:info.forme!=null?info.forme:null});
+          title:info.title||'',duration:info.duration||0,areas:info.areas||[],forme:info.forme!=null?info.forme:null,
+          targets:info.targets||[],muscles:info.muscles||[],load:info.load||'moyen'});
   const cut=new Date(Date.now()-60*86400000).toISOString().slice(0,10);
   const trimmed=f.filter(e=>e.date>cut).sort((a,b)=>a.date<b.date?-1:1);
   try{ if(window.localStorage) localStorage.setItem('elan_sessHistory',JSON.stringify(trimmed)); }catch(e){}
@@ -472,6 +492,7 @@ window.__mapExercise = function(ex, diff, ctx){
   const o={id:ex.id,name:ex.name,area:ex.region||ex.area||'lower',phase:ex.phase||'main',type:ex.type||'',desc:ex.desc,equip:ex.equip||[],
     side:ex.side||'both',sideLabel:ex.sideLabel||'côté',
     muscles:ex.muscles||'',position:ex.position||'',conseil:ex.conseil||'',alternative:ex.alternative||'',
+    targets:ex.targets||[],muscleTags:ex.muscleTags||[],load:ex.load||'moyen',pattern:ex.pattern||'',difficulty:ex.difficulty||0,flags:ex.flags||[],
     restSec:ex.rest||0,workSec:ex.workSec||0,doseText:ex.doseText||'',sets:ex.sets||1,tempo:'',mod:'',
     flagged:flagged?flagged.reason:null,prog:flagged?'down':'=',weighted:!!ex.weighted,level:0,levelNote:'',nextCue:'',regressed:false};
   const isMain=(ex.phase||'main')==='main' && !ex.weighted;
@@ -483,15 +504,18 @@ window.__mapExercise = function(ex, diff, ctx){
   }
   const level=window.__exLevel(ex.id, o.area);
   /* autorégulation du jour (énergie envelope SEP) : la forme module le VOLUME, pas le niveau acquis */
+  const recentLoad = ctx.recentLoad!=null ? ctx.recentLoad : (window.__recentLoadFactor?window.__recentLoadFactor():0);
   let vol = tier==='low'?0.78 : tier==='high'?1.0 : 0.92;
   if(fatigue>=7) vol*=0.88;
   if(heat>=7) vol*=0.9; else if(heat>=5) vol*=0.96;   // chaleur modérée : effet léger dès 5
   if(sleep<=4) vol*=0.92;                              // nuit courte : on allège le volume
-  vol=Math.max(0.6,vol);
+  if(recentLoad>0) vol*=(1-0.25*recentLoad);          // lendemain d'une grosse séance : on rabote le volume
+  vol=Math.max(0.55,vol);
   const dropSets=(tier==='low'?1:0)+(fatigue>=8?1:0);
   let restMult=1.0;
   if(tier==='low'||fatigue>=7||heat>=7||sleep<=4) restMult=1.35;
   else if(heat>=5) restMult=1.15;                     // chaleur modérée : un peu plus de récup
+  if(recentLoad>0) restMult=Math.max(restMult, 1+0.35*recentLoad); // charge récente : repos rallongé
   o.level=level;
   const sideSuffix = o.side==='each' ? ` par ${o.sideLabel}` : o.side==='alt' ? ' (en alternant)' : '';
   if(ex.unit==='reps'){
@@ -559,6 +583,62 @@ const __ARCHES=[
   {id:'recup',label:'Récupération & mobilité',zones:['lower','stretching'],order:'block',intent:'mobilite',leg:true,gentle:true,
    why:'journée plus fatiguée : on entretient en douceur (mobilité des jambes, étirements) sans puiser dans tes réserves.'},
 ];
+/* ═══ Phase 2 — Profil, socle (planchers), récupération musculaire & scoring ═══ */
+window.__daysSince = function(d){ if(!d) return 999; const a=new Date(d); if(isNaN(a)) return 999; const n=new Date();
+  return Math.round((Date.UTC(n.getFullYear(),n.getMonth(),n.getDate())-Date.UTC(a.getFullYear(),a.getMonth(),a.getDate()))/86400000); };
+
+/* Symptômes/objectifs du bilan → axes priorisés (accent, jamais exclusion) */
+window.__GOAL_AXES = { 'Marcher plus longtemps':['endurance','pied-tombant','equilibre'], "Garder l'équilibre":['equilibre','proprioception'], 'Me renforcer':['force-bas','force-haut','force-tronc'], 'Réduire la fatigue':['endurance'], 'Gagner en souplesse':['mobilite','spasticite'] };
+window.__SYM_AXES = { fatigue:['endurance'], equilibre:['equilibre','proprioception'], spasticite:['mobilite','spasticite'], sensitif:['proprioception','coordination'], force:['force-bas','force-tronc'] };
+window.__userPriorities = function(){ const b=window.__readBaseline(); const p=(b&&b.profile)||{}; const set=new Set();
+  (p.symptoms||[]).forEach(s=>(window.__SYM_AXES[s]||[]).forEach(a=>set.add(a)));
+  (p.goals||[]).forEach(g=>(window.__GOAL_AXES[g]||[]).forEach(a=>set.add(a)));
+  return set; };
+
+/* Planchers hebdo (nb de séances touchant l'axe) — garantissent l'amélioration globale */
+window.__PLANCHERS = { 'force-bas':2, 'equilibre':2, 'proprioception':2, 'pied-tombant':2, 'force-tronc':1, 'force-haut':1, 'endurance':1, 'mobilite':1, 'coordination':1 };
+window.__axisDeficit = function(){ const hist=window.__sessHistory().filter(e=>window.__daysSince(e.date)<7);
+  const count={}; hist.forEach(h=>{ new Set(h.targets||[]).forEach(a=>count[a]=(count[a]||0)+1); });
+  const def={}; Object.keys(window.__PLANCHERS).forEach(a=>{ def[a]=Math.max(0,(window.__PLANCHERS[a])-(count[a]||0)); });
+  return def; };
+
+/* Récupération musculaire par charge : faible=jour même, moyen=+1j, élevé(salle)=+2j (~60h) */
+window.__LOAD_DAYS = { faible:0, moyen:1, eleve:2 };
+window.__muscleRecovery = function(){ const rec={};
+  window.__sessHistory().forEach(h=>{ const a=window.__daysSince(h.date); const win=window.__LOAD_DAYS[h.load||'moyen']; if(win==null) return;
+    if(a<=win){ (h.muscles||[]).forEach(m=>{ if(!rec[m] || h.load==='eleve') rec[m]={load:h.load||'moyen'}; }); } });
+  return rec; };
+/* Facteur de charge récente (0..0.6) — rabote le volume & rallonge le repos le lendemain d'une grosse séance */
+window.__recentLoadFactor = function(){ let f=0; const W={faible:0.12,moyen:0.28,eleve:0.6};
+  window.__sessHistory().forEach(h=>{ const a=window.__daysSince(h.date); if(a<=2){ const w=(W[h.load||'moyen']||0.28)*(a===0?1:a===1?0.6:0.3); if(w>f) f=w; } });
+  return f; };
+
+window.__formeTarget = function(tier){ return tier==='low'?2 : tier==='high'?4 : 3; };
+/* Filtre de SÉCURITÉ (exclusion dure, contextuelle) : gating difficulté↔forme + flags + récup */
+window.__exAllowed = function(ex, ctx){
+  const diff=ex.difficulty||3; const f=ex.flags||[]; const m=ctx.metrics||{};
+  if(ctx.tier==='low' && diff>=4) return false;              // forme basse : pas d'exo dur
+  if(ctx.tier==='moderate' && diff>=5) return false;         // forme moyenne : pas d'exo avancé
+  if(f.indexOf('heatSensitive')>=0 && (m.heat||0)>=8) return false;
+  if(f.indexOf('fallRisk')>=0 && (m.fatigue||0)>=8) return false;
+  const isForce=(ex.targets||[]).some(t=>/^force/.test(t));   // pas de FORCE sur un muscle en récup
+  if(isForce && ctx.recovery && (ex.muscleTags||[]).some(mu=>ctx.recovery[mu])) return false;
+  return true;
+};
+/* Score d'un exercice : le socle (déficit) domine ; accent personnel borné ; variété ; forme ; anti-répétition */
+window.__scoreExercise = function(ex, ctx){
+  let s=0, best=0;
+  (ex.targets||[]).forEach(t=>{ if((ctx.deficit[t]||0)>best) best=ctx.deficit[t]; });
+  s += 20*best;                                              // socle : comble l'axe le plus en retard
+  let acc=0; (ex.targets||[]).forEach(t=>{ if(ctx.priorities.has(t)) acc++; });
+  s += Math.min(8, 4*acc);                                   // accent personnel borné (jamais dominant)
+  s += Math.min(12, ctx.exAge(ex.id));                       // variété
+  s -= 5*Math.abs((ex.difficulty||3)-ctx.formeTarget);       // adéquation à la forme du jour
+  if(ex.pattern && ctx.usedPatterns.has(ex.pattern)) s -= 10;// anti-répétition de pattern dans la séance
+  if(ctx.recovery && (ex.muscleTags||[]).some(mu=>ctx.recovery[mu])) s -= 6; // muscle encore fatigué
+  return s;
+};
+
 window.generateProgram = function(metrics, context){
   const { energy=5, fatigue=4, heat=4, sleep=6 } = metrics || {};
   const { readiness, tier } = window.__readiness(metrics);
@@ -621,8 +701,15 @@ window.generateProgram = function(metrics, context){
   if(arche.gentle) N=Math.min(N,3);
 
   const used=new Set();
-  const pick = (zone, count) => { const list=__rotate(byZone(zone).filter(e=>!used.has(e.name)), seed).sort((p,q)=>exAge(q.id)-exAge(p.id));
-    const out=[]; for(const ex of list){ if(out.length>=count) break; out.push(ex); used.add(ex.name); } return out; };
+  const usedPatterns=new Set();
+  const scoreCtx={ tier, metrics, exAge, priorities:window.__userPriorities(), deficit:window.__axisDeficit(), recovery:window.__muscleRecovery(), formeTarget:window.__formeTarget(tier), usedPatterns };
+  const scorePick = (cands, count) => {
+    const scored=__rotate(cands.filter(e=>!used.has(e.name) && window.__exAllowed(e,scoreCtx)), seed)
+      .map(e=>({e,sc:window.__scoreExercise(e,scoreCtx)})).sort((a,b)=>b.sc-a.sc);
+    const out=[]; for(const r of scored){ if(out.length>=count) break; out.push(r.e); used.add(r.e.name); if(r.e.pattern) usedPatterns.add(r.e.pattern); }
+    return out;
+  };
+  const pick = (zone, count) => scorePick(byZone(zone), count);
 
   const zoneA=arche.zones[0]; const zoneB=(arche.zones[1] && zoneHas(arche.zones[1])) ? arche.zones[1] : null;
   let blocks=[];
@@ -634,7 +721,8 @@ window.generateProgram = function(metrics, context){
     else blocks=A.concat(B);
   } else { blocks=pick(zoneA,N); }
   if(blocks.length<N){ for(const ex of pick('lower', N-blocks.length)) blocks.push(ex); }      // biais jambes
-  if(blocks.length<N){ for(const ex of __rotate(mainsAll,seed).sort((p,q)=>exAge(q.id)-exAge(p.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } } }
+  if(blocks.length<N){ for(const ex of scorePick(mainsAll, N-blocks.length)) blocks.push(ex); } // complète sur tout le pool, scoré
+  if(blocks.length<N){ for(const ex of __rotate(mainsAll,seed).sort((p,q)=>exAge(q.id)-exAge(p.id))){ if(blocks.length>=N) break; if(!used.has(ex.name)){ blocks.push(ex); used.add(ex.name); } } } // dernier recours : jamais de séance vide
 
   /* Releveur du pied (réparti 2×/semaine) */
   if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
@@ -647,9 +735,14 @@ window.generateProgram = function(metrics, context){
   const cools = __rotate(cooldowns, seed+3);
   const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
-  const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
+  const recentLoad = window.__recentLoadFactor();
+  const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
   const duration = __sessionDuration(seq);
   const intensity = (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
+  const __mains=exercises.filter(e=>e.phase==='main');
+  const progTargets=[...new Set(__mains.flatMap(e=>e.targets||[]))];
+  const progMuscles=[...new Set(__mains.flatMap(e=>e.muscleTags||[]))];
+  const progLoad = __mains.some(e=>e.load==='eleve')?'eleve' : (__mains.filter(e=>e.load==='moyen').length>=__mains.length/2?'moyen':'faible');
 
   /* Explications "Pourquoi cette séance" */
   const reasons=[];
@@ -665,10 +758,11 @@ window.generateProgram = function(metrics, context){
   if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'volume réduit et repos allongé, je garde une marge de sécurité.'});
   reasons.push({t:'Structure respectée', d:arche.order==='alt'?'échauffement, travail en alternance, puis retour au calme.':'échauffement, travail ciblé, puis retour au calme.'});
   if(hasDorsi) reasons.push({t:'Releveur du pied', d:'tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
+  if(Object.keys(scoreCtx.recovery).length) reasons.push({t:'Récupération musculaire', d:'certains muscles sollicités récemment (ou en salle) récupèrent encore — je les épargne aujourd’hui et je rallonge un peu les repos.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
 
-  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, modules:null, moduleEndIdx:null };
+  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, targets:progTargets, muscles:progMuscles, load:progLoad, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
@@ -701,7 +795,7 @@ window.generateCustomProgram = function(goals, intensity, metrics, context){
   const warm = __rotate(warmups,seed)[0];
   const cool = __rotate(cooldowns,seed+3)[0];
   const seq=[]; if(warm) seq.push(warm); seq.push(...chosen); if(cool) seq.push(cool);
-  const exercises = seq.map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
+  const exercises = seq.map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad:window.__recentLoadFactor()}));
   const labels = Object.fromEntries(window.GOAL_OPTIONS.map(o=>[o.key,o.label.toLowerCase()]));
   const goalTxt = goals.map(g=>labels[g]||g).join(', ');
   const reasons = [{t:'Séance sur mesure', d:`tu as choisi de travailler : ${goalTxt}.`}, {t:'Structure respectée', d:'échauffement, travail ciblé, puis retour au calme.'}];
@@ -712,7 +806,11 @@ window.generateCustomProgram = function(goals, intensity, metrics, context){
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.push({t:'Difficulté conservée', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} comme sur ta séance Élan.`});
   reasons.push({t:'Réglages repris', d:'matériel et adaptations de difficulté de ton profil sont conservés.'});
-  return { title:'Séance sur mesure', intensity:meta.label, duration:__sessionDuration(seq), readiness, tier, exercises, reasons, modules:null, moduleEndIdx:null, custom:true, goals };
+  const __cm=exercises.filter(e=>e.phase==='main');
+  const cTargets=[...new Set(__cm.flatMap(e=>e.targets||[]))];
+  const cMuscles=[...new Set(__cm.flatMap(e=>e.muscleTags||[]))];
+  const cLoad=__cm.some(e=>e.load==='eleve')?'eleve':(__cm.filter(e=>e.load==='moyen').length>=__cm.length/2?'moyen':'faible');
+  return { title:'Séance sur mesure', intensity:meta.label, duration:__sessionDuration(seq), readiness, tier, exercises, reasons, targets:cTargets, muscles:cMuscles, load:cLoad, modules:null, moduleEndIdx:null, custom:true, goals };
 };
 
 /* ═══ SÉANCES SALLE (depuis exercices_salle — ordre du kiné conservé) ═══ */
@@ -720,12 +818,15 @@ window.buildGymProgram = function(id, context, metrics){
   const s = window.ED.gymSessions.find(x=>x.id===id); if(!s) return null;
   const diff = window.__readDiff();
   const { readiness, tier } = window.__readiness(metrics);
-  const exercises = s.exercises.map(ex=>window.__mapExercise(ex, diff, {tier, metrics}));
+  const exercises = s.exercises.map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad:window.__recentLoadFactor()}));
   const reasons=[{t:s.title, d:s.subtitle}];
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.push({t:'Difficulté conservée', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')}.`});
   reasons.push({t:'Séance salle dédiée', d:'enchaînement et doses conçus pour la salle.'});
-  return { title:s.title, intensity:'Salle', duration:__sessionDuration(s.exercises), readiness, tier, exercises, reasons, modules:null, moduleEndIdx:null, gym:true, gymId:id };
+  reasons.push({t:'Charge élevée prise en compte', d:'la salle sollicite fort tes muscles : je les laisserai récupérer ~2 jours et j’orienterai les prochaines séances en conséquence.'});
+  return { title:s.title, intensity:'Salle', duration:__sessionDuration(s.exercises), readiness, tier, exercises, reasons,
+    region:s.regionTag||'', intent:'force', targets:s.targets||[], muscles:s.muscleTags||[], load:s.load||'eleve',
+    modules:null, moduleEndIdx:null, gym:true, gymId:id };
 };
 
 /* components block 1 */
@@ -1612,7 +1713,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       const before=window.__streak();
       const __ci=window.__readCheckin(); const __forme=(__ci&&__ci.metrics)?window.__readiness(__ci.metrics).readiness:null;
       const __areas=[...new Set((program.exercises||[]).filter(e=>e.phase!=='warmup'&&e.phase!=='cooldown').map(e=>e.area).filter(Boolean))];
-      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||'')), title:program.title||'Séance', duration:program.duration||0, areas:__areas, forme:__forme});
+      window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||'')), title:program.title||'Séance', duration:program.duration||0, areas:__areas, forme:__forme, targets:program.targets||[], muscles:program.muscles||[], load:program.load||'moyen'});
       const streak=window.__streak();
       const week=window.__weekDoneCount();
       const goal=4;
