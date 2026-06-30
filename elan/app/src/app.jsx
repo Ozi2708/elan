@@ -1748,6 +1748,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [flagged,setFlagged]=React.useState(()=>{try{return JSON.parse((window.localStorage&&localStorage.getItem('elan_difficulties'))||'{}');}catch(e){return{};}});
     const [loadW,setLoadW]=React.useState(0);
     const [loadR,setLoadR]=React.useState(0);
+    const [rpe,setRpe]=React.useState(null);   // effort ressenti 1-10 (autorégulation)
+    React.useEffect(()=>{ setRpe(null); },[exIdx]);
 
     const ex=exs[exIdx];
     const sets=ex.sets||1;
@@ -1772,10 +1774,18 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const isFlagged=!!flagged[ex.id];
     const outcomeRef=React.useRef({});
     const loggedRef=React.useRef(new Set());
-    function markEasy(){
-      outcomeRef.current[ex.id]='easy'; window.__logSession(ex.id,'easy',ex.area);
-      setToast('Parfait, je corse cet exercice dès la prochaine séance'+(ex.nextCue?' : '+ex.nextCue.toLowerCase():'')+'.');
-      setTimeout(()=>setToast(null),4200);
+    /* Effort ressenti (RPE 1-10) → autorégulation graduée. 1-3 trop facile (on corse),
+       4-8 bonne zone (progression normale), 9-10 très dur (on allège). */
+    function rateRPE(v){
+      if(rpe!=null) return;                  // une seule notation par exercice
+      setRpe(v);
+      const outcome = v<=3?'easy' : v>=9?'hard' : 'ok';
+      outcomeRef.current[ex.id]= outcome==='ok' ? 'rpe' : outcome;   // marque l'exo comme évalué
+      window.__logSession(ex.id, outcome, ex.area, program.tier);
+      setToast(v<=3 ? `Effort ${v}/10 — je corse cet exercice la prochaine fois.`
+             : v>=9 ? `Effort ${v}/10 — j’allège un peu la prochaine fois.`
+             : `Effort ${v}/10 — bonne zone, je garde le cap et fais progresser en douceur.`);
+      setTimeout(()=>setToast(null),3400);
     }
     function flagExercise(reason){
       const next={...flagged,[ex.id]:{reason}};
@@ -1836,8 +1846,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       if(ex.weighted){ window.__logStrength(ex.id, ex.name, ex.sets, loadW, loadR); }
       if(!ex.weighted && (ex.phase||'main')==='main' && !loggedRef.current.has(ex.id)){
         loggedRef.current.add(ex.id);
-        const out=outcomeRef.current[ex.id];
-        if(out!=='easy'&&out!=='hard') window.__logSession(ex.id,'ok',ex.area,program.tier);
+        if(!outcomeRef.current[ex.id]) window.__logSession(ex.id,'ok',ex.area,program.tier);   // déjà évalué (RPE / facile / signalé) → pas de double log
       }
       setDone(d=>{const n=new Set(d);n.add(exIdx);return n;});
       setSide(firstSide);
@@ -1997,27 +2006,37 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 </div>
                 <Btn variant={peak?'energy':'primary'} size="lg" fullWidth onClick={completeSet}>{setNum<sets?'Série terminée ✓':(exIdx===exs.length-1?'Terminer la séance ✦':'Exercice terminé →')}</Btn>
               </>)}
-              {/* utility row: Infos toujours · Facile/Difficile si exo principal */}
-              <div style={{display:'flex',gap:8,marginTop:12}}>
-                <button onClick={()=>setInfoOpen(true)} style={{flex:1,minHeight:48,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.tint,border:`1px solid rgba(47,191,161,0.28)`,borderRadius:13,cursor:'pointer',color:C.tealDk,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
+              {/* Feedback : effort ressenti (RPE) → autorégulation graduée + infos + signalement gêne */}
+              {!ex.weighted && (ex.phase||'main')==='main' && !isFlagged && (
+                <div style={{background:C.bg,border:`1px solid ${C.line}`,borderRadius:14,padding:'11px 12px',marginTop:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
+                    <span style={{fontSize:12.5,fontWeight:600,color:C.body}}>Effort ressenti ?{rpe!=null?<span style={{color:C.tealDk}}> {rpe}/10</span>:''}</span>
+                    <span style={{fontSize:10.5,color:C.faint}}>{rpe!=null?'merci !':'aide-moi à doser'}</span>
+                  </div>
+                  <div style={{display:'flex',gap:3}}>
+                    {Array.from({length:10}).map((_,i)=>{const v=i+1;const zc=v<=3?'#2FA56B':v>=9?C.amber:C.teal;const on=rpe===v;const rated=rpe!=null;return(
+                      <button key={v} disabled={rated} onClick={()=>rateRPE(v)} style={{flex:1,minHeight:40,borderRadius:9,border:`1px solid ${on?zc:C.line}`,background:on?zc:C.card,color:on?'#fff':(rated?C.faint:C.body),fontSize:13,fontWeight:600,cursor:rated?'default':'pointer',fontFamily:"'DM Mono',monospace",opacity:rated&&!on?0.45:1,padding:0,touchAction:'manipulation',transition:'all 120ms ease'}}>{v}</button>
+                    );})}
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',marginTop:5,fontSize:9.5,color:C.faint}}><span>très facile</span><span>bonne zone</span><span>très dur</span></div>
+                </div>
+              )}
+              <div style={{display:'flex',gap:8,marginTop:8}}>
+                <button onClick={()=>setInfoOpen(true)} style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.tint,border:`1px solid rgba(47,191,161,0.28)`,borderRadius:13,cursor:'pointer',color:C.tealDk,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
                   Infos
                 </button>
-                {isFlagged ? (
-                  <div style={{flex:2,minHeight:48,display:'flex',alignItems:'center',justifyContent:'center',gap:7,fontSize:12.5,color:C.tealDk,fontWeight:600,background:'rgba(47,191,161,0.10)',border:`1px solid rgba(47,191,161,0.28)`,borderRadius:13}}>
+                {!ex.weighted && (ex.phase||'main')==='main' && (isFlagged ? (
+                  <div style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:7,fontSize:12.5,color:C.tealDk,fontWeight:600,background:'rgba(47,191,161,0.10)',border:`1px solid rgba(47,191,161,0.28)`,borderRadius:13}}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    Signalé — j'allège la prochaine fois
+                    Signalé
                   </div>
-                ) : !ex.weighted && (ex.phase||'main')==='main' ? (<>
-                  <button onClick={markEasy} style={{flex:1,minHeight:48,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.tint,border:`1px solid rgba(47,191,161,0.30)`,borderRadius:13,cursor:'pointer',color:C.tealDk,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
-                    Facile
+                ) : (
+                  <button onClick={()=>setFlagOpen(true)} style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.bg,border:`1px solid ${C.line2}`,borderRadius:13,cursor:'pointer',color:C.body,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+                    Gêne ou douleur ?
                   </button>
-                  <button onClick={()=>setFlagOpen(true)} style={{flex:1,minHeight:48,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.bg,border:`1px solid ${C.line2}`,borderRadius:13,cursor:'pointer',color:C.body,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.body} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                    Difficile
-                  </button>
-                </>) : null}
+                ))}
               </div>
             </>) : (()=>{ const isNextRest=restKindRef.current==='next'; const isSideRest=restKindRef.current==='side'; const nextEx=exs[exIdx+1]; return (<>
               <div style={{margin:'auto 0',width:'100%'}}>
