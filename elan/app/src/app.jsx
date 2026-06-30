@@ -439,6 +439,23 @@ window.__refreshCardioLevel=function(){
   try{ if(window.localStorage) localStorage.setItem('elan_baseline',JSON.stringify(b)); }catch(e){}
   return true;
 };
+
+/* ─── Test « Timed Up & Go » (TUG) — mobilité & risque de chute, référence en SEP ───
+   Se lever d'une chaise, marcher 3 m, demi-tour, revenir, se rasseoir — chronométré (s, plus bas = mieux). */
+window.__readTUG=function(){ try{ const r=JSON.parse((window.localStorage&&localStorage.getItem('elan_tug'))||'null'); if(r&&r.length!=null) return r; }catch(e){} return []; };
+window.__addTUG=function(sec,dateStr){ const list=window.__readTUG().slice(); const d=dateStr||window.__today(); const s=Math.max(0,Math.round(sec*10)/10);
+  const ix=list.findIndex(function(e){return e.date===d;}); if(ix>=0) list[ix]={date:d,s:s}; else list.push({date:d,s:s});
+  list.sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;}); try{ if(window.localStorage) localStorage.setItem('elan_tug',JSON.stringify(list)); }catch(e){} return list; };
+window.__removeTUG=function(date){ const list=window.__readTUG().filter(function(e){return e.date!==date;}); try{ if(window.localStorage) localStorage.setItem('elan_tug',JSON.stringify(list)); }catch(e){} return list; };
+window.__tugBand=function(s){ return s==null?null : s<10?{label:'Mobilité normale',tone:'good'} : s<13.5?{label:'À surveiller',tone:'mid'} : s<20?{label:'Risque de chute majoré',tone:'warn'} : {label:'Aide souvent nécessaire',tone:'warn'}; };
+
+/* ─── Journal des séances d'étirement (annexe au programme, n'affecte pas les stats d'entraînement) ─── */
+window.__readStretchLog=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_stretch_log'))||'[]')||[]; }catch(e){ return []; } };
+window.__logStretchSession=function(meta){ const log=window.__readStretchLog(); log.push({date:window.__today(), id:(meta&&meta.id)||'r', title:(meta&&meta.title)||'Étirements', min:(meta&&meta.min)||5, ts:Date.now()});
+  const cut=new Date(Date.now()-365*86400000).toISOString().slice(0,10); const trimmed=log.filter(function(e){return e.date>cut;});
+  try{ if(window.localStorage) localStorage.setItem('elan_stretch_log',JSON.stringify(trimmed)); }catch(e){} return trimmed; };
+window.__stretchStats=function(){ const log=window.__readStretchLog(); const days=[...new Set(log.map(function(e){return e.date;}))]; const d7=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  return { total:log.length, days:days.length, week:days.filter(function(d){return d>=d7;}).length, last:log.length?log[log.length-1]:null }; };
 /* ─── Mesures mensuelles masquées : permet de supprimer une mesure erronée
    sans toucher aux données de démo. Identifiant "moisLabel|clé". ─── */
 window.__readBilanHidden=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_bilan_hidden'))||'[]'); }catch(e){ return []; } };
@@ -456,7 +473,7 @@ window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStor
 window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_sts_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_sts_base','elan_tug','elan_stretch_log','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
 window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
@@ -516,6 +533,7 @@ window.__buildClinicalReport=function(){
   const d30=new Date(Date.now()-30*86400000).toISOString().slice(0,10);
   const sess30=[...new Set(hist.filter(function(h){return h.date>=d30;}).map(function(h){return h.date;}))].length;
   const walk=window.__readWalk6()||[];
+  const tug=window.__readTUG()||[];
   const bilans=window.__readBilans()||[];
   const b0=bilans[0]||null, bL=bilans[bilans.length-1]||null;
   const lvl=(b.levels)||{};
@@ -527,6 +545,7 @@ window.__buildClinicalReport=function(){
     profile:{ symptoms:symptoms, goals:goals, side:side==='g'?'Gauche':side==='d'?'Droite':'—' },
     forme:{ series:forme.slice(-30), mean30:mean(fvals.slice(-30)), min30:fvals.slice(-30).length?Math.min.apply(null,fvals.slice(-30)):null, max30:fvals.slice(-30).length?Math.max.apply(null,fvals.slice(-30)):null, trend:(forme.length>=2)?(forme[forme.length-1].forme-forme[0].forme):null, n:forme.length },
     walk6:{ series:walk, last:walk.length?walk[walk.length-1]:null, first:walk.length?walk[0]:null, delta:walk.length>=2?(walk[walk.length-1].m-walk[0].m):null },
+    tug:{ series:tug, last:tug.length?tug[tug.length-1]:null, first:tug.length?tug[0]:null, delta:tug.length>=2?+(tug[tug.length-1].s-tug[0].s).toFixed(1):null, band:tug.length?window.__tugBand(tug[tug.length-1].s):null },
     tests:{ first:b0, last:bL, count:bilans.length },
     levels:Object.keys(AREA).filter(function(k){return lvl[k]!=null;}).map(function(k){return {zone:AREA[k], level:lvl[k]};}),
     adherence:{ total:days.length, last30:sess30, perWeek:days.length&&start?+(days.length/Math.max(1,(Date.now()-new Date(start).getTime())/(7*86400000))).toFixed(1):0, streak:window.__streak(), best:window.__bestStreak() },
@@ -2412,6 +2431,94 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
 
+  function TUGCard(){
+    const color='#6E73CE';
+    const [list,setList]=React.useState(()=>window.__readTUG());
+    const [phase,setPhase]=React.useState('idle');   // idle | running | result
+    const [elapsed,setElapsed]=React.useState(0);
+    const [manage,setManage]=React.useState(false);
+    const startRef=React.useRef(0), rafRef=React.useRef(null);
+    const fmtLong=(s)=>{ const d=new Date(s+'T00:00'); return d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'}); };
+    React.useEffect(()=>()=>{ if(rafRef.current) cancelAnimationFrame(rafRef.current); },[]);
+    function tick(){ setElapsed((performance.now()-startRef.current)/1000); rafRef.current=requestAnimationFrame(tick); }
+    function start(){ try{unlockAudio();}catch(e){} startRef.current=performance.now(); setElapsed(0); setPhase('running'); try{beep(880,0.1);}catch(e){} rafRef.current=requestAnimationFrame(tick); }
+    function stop(){ if(rafRef.current) cancelAnimationFrame(rafRef.current); const s=(performance.now()-startRef.current)/1000; setElapsed(s); setPhase('result'); try{beep(560,0.22);}catch(e){} }
+    function save(){ const nl=window.__addTUG(elapsed); setList(nl); setPhase('idle'); setElapsed(0); }
+    function remove(date){ const nl=window.__removeTUG(date); setList(nl); if(nl.length===0) setManage(false); }
+    const last=list[list.length-1], prev=list[list.length-2];
+    const delta = last&&prev ? +(last.s-prev.s).toFixed(1) : null;   // négatif = amélioration (plus rapide)
+    const band = last?window.__tugBand(last.s):null;
+    const bandCol = band?(band.tone==='good'?C.tealDk:band.tone==='warn'?'#C2410C':C.amber):C.muted;
+    const card={background:C.card,border:`1px solid rgba(110,115,206,0.28)`,borderRadius:20,boxShadow:C.sh};
+    return (
+      <div style={{...card,padding:'18px 16px 16px',marginBottom:22}}>
+        <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:14}}>
+          <div style={{width:44,height:44,borderRadius:13,background:'rgba(110,115,206,0.12)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="5" r="2.4"/><path d="M9 22l1.5-7L8 12l1-4 3 1.5L15 8M13.5 15L16 22"/></svg>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:15.5,fontWeight:600,color:C.ink}}>Timed Up &amp; Go</span>
+              <span style={{fontSize:10,fontWeight:600,color:color,background:'rgba(110,115,206,0.12)',border:`1px solid rgba(110,115,206,0.3)`,borderRadius:99,padding:'2px 8px',letterSpacing:'0.03em'}}>MOBILITÉ</span>
+            </div>
+            <div style={{fontSize:12,color:C.muted,marginTop:3,lineHeight:1.45}}>Te lever d'une chaise, marcher 3 m, faire demi-tour, revenir et te rasseoir. Mesure l'agilité et le risque de chute.</div>
+          </div>
+        </div>
+
+        {phase==='idle' && (<>
+          {list.length>0 ? (
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:10,padding:'0 2px'}}>
+              <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}}>
+                <span style={{fontFamily:"'DM Mono',monospace",fontSize:30,fontWeight:500,color:C.ink,lineHeight:1}}>{last.s}<span style={{fontSize:14,color:C.muted,marginLeft:3}}>s</span></span>
+                {delta!=null && <span style={{fontSize:12.5,fontWeight:600,color:delta<0?C.tealDk:delta>0?C.amber:C.faint}}>{delta<0?`▲ ${delta} s`:delta>0?`▼ +${delta} s`:'= stable'} <span style={{color:C.faint,fontWeight:400}}>vs préc.</span></span>}
+              </div>
+              <button onClick={()=>setManage(v=>!v)} style={{background:'none',border:'none',cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:12.5,fontWeight:600,color:manage?C.tealDk:C.muted,padding:'2px 4px'}}>{manage?'Terminé':'Gérer'}</button>
+            </div>
+          ) : <div style={{fontSize:13,color:C.muted,textAlign:'center',padding:'14px 8px'}}>Aucune mesure — lance ton premier test ci-dessous.</div>}
+          {band && <div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11.5,fontWeight:600,color:bandCol,background:band.tone==='good'?'rgba(47,191,161,0.10)':band.tone==='warn'?'rgba(194,65,12,0.08)':'rgba(224,138,11,0.10)',border:`1px solid ${bandCol}33`,borderRadius:99,padding:'3px 10px',marginBottom:8}}>{band.label}</div>}
+          {manage && list.length>0 && (
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:4,marginBottom:8}}>
+              {list.slice().reverse().map(function(e){ return (
+                <div key={e.date} style={{display:'flex',alignItems:'center',gap:12,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'10px 12px'}}>
+                  <span style={{flex:1,fontSize:13,color:C.body}}>{fmtLong(e.date)}</span>
+                  <span style={{fontFamily:"'DM Mono',monospace",fontSize:15,fontWeight:500,color:C.ink}}>{e.s} s</span>
+                  <button onClick={()=>remove(e.date)} aria-label="Supprimer" style={{width:34,height:34,borderRadius:10,border:`1px solid rgba(224,138,11,0.3)`,background:'rgba(224,138,11,0.08)',color:C.amber,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
+              );})}
+            </div>
+          )}
+          <div style={{background:C.bg,border:`1px solid ${C.line}`,borderRadius:13,padding:'11px 13px',marginBottom:12,fontSize:11.5,color:C.muted,lineHeight:1.5}}>Installe une chaise stable, repère un point à <b style={{color:C.body}}>3 mètres</b>, garde un appui à portée. Touche « Démarrer » en étant assis, et arrête le chrono une fois rassis.</div>
+          <button onClick={start} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,background:`linear-gradient(135deg,#8A8FE0,${color})`,border:'none',color:'#fff',borderRadius:13,padding:'13px',fontSize:14.5,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",boxShadow:'0 6px 16px rgba(110,115,206,0.3)'}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            {list.length>0?'Refaire le test':'Démarrer le test'}
+          </button>
+        </>)}
+
+        {phase==='running' && (
+          <div style={{textAlign:'center',padding:'8px 0 4px'}}>
+            <div style={{fontFamily:"'DM Mono',monospace",fontSize:54,fontWeight:500,color:color,lineHeight:1,marginBottom:6}}>{elapsed.toFixed(1)}<span style={{fontSize:20,color:C.muted}}>s</span></div>
+            <div style={{fontSize:12.5,color:C.muted,marginBottom:16}}>Lève-toi, marche 3 m, demi-tour, reviens, rassieds-toi.</div>
+            <button onClick={stop} style={{width:'100%',background:color,border:'none',color:'#fff',borderRadius:13,padding:'14px',fontSize:15,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Je suis rassis·e — arrêter</button>
+          </div>
+        )}
+
+        {phase==='result' && (
+          <div style={{textAlign:'center',padding:'6px 0 2px'}}>
+            <div style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:4}}>Ton temps</div>
+            <div style={{fontFamily:"'DM Mono',monospace",fontSize:48,fontWeight:500,color:C.ink,lineHeight:1,marginBottom:6}}>{elapsed.toFixed(1)}<span style={{fontSize:18,color:C.muted}}>s</span></div>
+            {(()=>{ const bd=window.__tugBand(elapsed); const bc=bd.tone==='good'?C.tealDk:bd.tone==='warn'?'#C2410C':C.amber; return <div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:bc,marginBottom:16}}>{bd.label}</div>; })()}
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={start} style={{flex:1,background:C.card,border:`1px solid ${C.line}`,color:C.muted,borderRadius:12,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Refaire</button>
+              <button onClick={save} style={{flex:2,background:`linear-gradient(135deg,#8A8FE0,${color})`,border:'none',color:'#fff',borderRadius:12,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Enregistrer</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function ClinicalReport({ onClose }){
     const R=window.__buildClinicalReport();
     const fmtDate=(s)=>{ try{ const d=new Date(s+'T00:00'); return d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'}); }catch(e){ return s; } };
@@ -2471,6 +2578,16 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               {R.walk6.delta!=null&&<div>Évolution depuis le 1er test : <b style={{color:R.walk6.delta>0?'#177e4c':R.walk6.delta<0?'#c0392b':'#5b6b7a'}}>{(R.walk6.delta>0?'+':'')+R.walk6.delta} m</b></div>}
             </div>
           </div>) : <div style={{fontSize:11.5,color:'#8a96a7'}}>Aucun test de marche enregistré.</div>}
+
+          <div style={sec}>Mobilité & risque de chute — Timed Up &amp; Go</div>
+          {R.tug.series.length ? (<div style={{display:'flex',alignItems:'center',gap:20,flexWrap:'wrap'}}>
+            <div><Spark pts={R.tug.series.map(e=>e.s)} color="#6E73CE"/><div style={{fontSize:10,color:'#8a96a7',marginTop:2}}>{R.tug.series.length} mesure(s) · plus bas = mieux</div></div>
+            <div style={{fontSize:12,lineHeight:1.7}}>
+              <div>Dernier temps : <b>{R.tug.last.s} s</b> <span style={{color:'#8a96a7'}}>({fmtDate(R.tug.last.date)})</span></div>
+              {R.tug.band&&<div>Interprétation : <b style={{color:R.tug.band.tone==='good'?'#177e4c':R.tug.band.tone==='warn'?'#c0392b':'#b26b05'}}>{R.tug.band.label}</b></div>}
+              {R.tug.delta!=null&&<div>Évolution depuis le 1er test : <b style={{color:R.tug.delta<0?'#177e4c':R.tug.delta>0?'#c0392b':'#5b6b7a'}}>{(R.tug.delta>0?'+':'')+R.tug.delta} s</b></div>}
+            </div>
+          </div>) : <div style={{fontSize:11.5,color:'#8a96a7'}}>Aucun test Timed Up &amp; Go enregistré.</div>}
 
           <div style={sec}>Tests fonctionnels mensuels</div>
           {R.tests.last ? (<table style={{width:'100%',borderCollapse:'collapse'}}>
@@ -2745,6 +2862,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             </div>
           )}
           <Walk6Card/>
+          <TUGCard/>
           <div style={{display:'flex',alignItems:'center',gap:10,margin:'2px 0 14px'}}>
             <span style={{fontSize:11,fontWeight:600,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',whiteSpace:'nowrap'}}>Tests mensuels</span>
             <span style={{flex:1,height:1,background:C.line}}/>
@@ -3317,7 +3435,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 })();
 /* components block 7 */
 (function(){
-  const { BrandMark, AREA_LABELS, AREA_COLORS, C } = window.EC;
+  const { BrandMark, AREA_LABELS, AREA_COLORS, CircleTimer, Btn, beep, unlockAudio, C } = window.EC;
   const FULL=['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
   const MONTHS=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
   const WD=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
@@ -3498,23 +3616,137 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       </div>
     );
   }
+  /* Routines d'étirement guidées — annexe au programme, lançables à tout moment (soir, réveil…). */
+  const S=(name,sec,side,position,desc,conseil)=>({name,sec,side:side||'both',position,desc,conseil:conseil||''});
+  const STRETCH_ROUTINES=[
+    { id:'reveil', title:'Réveil en douceur', sub:'mobilité matinale', min:5, color:'#12A38C',
+      icon:(c)=><g><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></g>,
+      steps:[
+        S('Mobilisation des chevilles',40,'both','Assis, jambes tendues ou pieds au sol.','Dessine des cercles lents avec chaque cheville, dans un sens puis l’autre, en allant au bout du mouvement.','Réveille la cheville — clé pour dérouler le pas sans accrocher le pied.'),
+        S('Étirement du mollet',30,'each','Debout face à un mur, jambe à étirer tendue derrière, talon au sol.','Avance le bassin vers le mur en gardant le talon ancré, jusqu’à sentir l’étirement dans le mollet.','Le mollet raide tire le pied vers le bas : l’assouplir aide la marche.'),
+        S('Ouverture de hanche',30,'each','En fente, un genou au sol (sur un coussin).','Avance doucement le bassin, grand et droit, jusqu’à sentir l’avant de la hanche arrière s’étirer.','Ouvre la hanche pour une foulée plus ample.'),
+        S('Rotation douce du tronc',30,'each','Assis, dos droit, mains sur les épaules ou croisées.','Tourne lentement le buste d’un côté, reviens au centre, puis de l’autre. Respire.','Mobilise la colonne en douceur, sans forcer.'),
+        S('Grand étirement & respiration',40,'both','Debout ou assis, bras vers le haut.','Grandis-toi en inspirant, bras vers le ciel, puis relâche en expirant. Répète lentement.','Termine en relâchant tout le corps.'),
+      ]},
+    { id:'antispas', title:'Anti-spasticité jambes', sub:'relâcher les muscles raides', min:8, color:'#0E8FB0',
+      icon:(c)=><g><path d="M4 18s2-3 8-3 8 3 8 3"/><path d="M12 15V3M8 7l4-4 4 4"/></g>,
+      steps:[
+        S('Mollet (gastrocnémien)',40,'each','Debout face au mur, jambe arrière tendue, talon au sol.','Pousse le bassin vers le mur, jambe arrière bien tendue, talon ancré. Tiens sans rebond.','Cible le mollet superficiel, souvent spastique en SEP.'),
+        S('Soléaire (mollet profond)',40,'each','Même position, mais genou arrière légèrement fléchi.','Fléchis un peu le genou arrière pour descendre l’étirement vers le bas du mollet/le tendon.','Complète le mollet profond, utile contre l’équin.'),
+        S('Psoas / fléchisseurs de hanche',45,'each','En fente, un genou au sol.','Bascule le bassin vers l’avant en restant droit, fessiers serrés, jusqu’à l’étirement à l’aine.','Le psoas spastique limite la marche : à relâcher en priorité.'),
+        S('Adducteurs (papillon)',45,'both','Assis, plantes des pieds jointes, talons vers le bassin.','Laisse les genoux descendre sous leur propre poids, dos droit, sans forcer.','Détend l’intérieur des cuisses, qui serre les jambes.'),
+        S('Ischio-jambiers',40,'each','Assis, une jambe tendue, l’autre repliée.','Penche-toi vers le pied de la jambe tendue, dos droit, jusqu’à l’étirement à l’arrière de la cuisse.','Soulage la tension de l’arrière de cuisse.'),
+        S('Piriforme / fessier profond',40,'each','Allongé sur le dos, une cheville posée sur le genou opposé.','Ramène doucement la cuisse soutenue vers la poitrine jusqu’à sentir la fesse s’étirer.','Relâche le bassin et la hanche.'),
+      ]},
+    { id:'soir', title:'Détente du soir', sub:'relâcher avant la nuit', min:6, color:'#6E73CE',
+      icon:(c)=><g><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></g>,
+      steps:[
+        S('Enroulement de la colonne',45,'both','Debout, genoux souples, ou assis jambes tendues.','Enroule lentement la colonne vers l’avant, relâche la nuque et les bras vers le sol.','Relâche toute la chaîne postérieure.'),
+        S('Ischio-jambiers allongé',40,'each','Allongé, une jambe levée, mains derrière la cuisse.','Approche doucement la jambe tendue vers toi jusqu’à l’étirement à l’arrière.','Confortable et sécurisant, au sol.'),
+        S('Fessier / piriforme allongé',40,'each','Allongé, cheville sur le genou opposé.','Ramène la cuisse vers la poitrine, sens l’étirement dans la fesse.','Détend le bassin après la journée.'),
+        S('Torsion douce allongée',40,'each','Allongé sur le dos, genoux fléchis.','Laisse les deux genoux tomber lentement d’un côté, épaules au sol, regarde de l’autre côté.','Mobilise le bas du dos en douceur.'),
+        S('Respiration & relâchement',60,'both','Allongé, bras le long du corps, yeux fermés.','Respire lentement et profondément, relâche les épaules, les hanches et les jambes à chaque expiration.','Prépare un meilleur sommeil.'),
+      ]},
+    { id:'assis', title:'Cou, épaules & dos', sub:'tout en restant assis', min:5, color:'#2FA56B',
+      icon:(c)=><g><circle cx="12" cy="6" r="3"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></g>,
+      steps:[
+        S('Rotation lente du cou',30,'each','Assis, dos droit, épaules basses.','Tourne lentement la tête vers une épaule, reviens au centre, puis de l’autre côté. Sans forcer.','Détend la nuque, souvent tendue.'),
+        S('Inclinaison du cou',30,'each','Assis, une main pose doucement la tête vers l’épaule.','Incline l’oreille vers l’épaule, la main accompagne sans tirer fort. Respire.','Relâche les trapèzes.'),
+        S('Étirement des épaules',30,'each','Assis, un bras tendu en travers de la poitrine.','Ramène le bras tendu contre toi avec l’autre avant-bras, jusqu’à l’étirement de l’épaule.','Ouvre les épaules après la position assise.'),
+        S('Ouverture de la poitrine',40,'both','Assis, mains croisées derrière le dos (ou sur la chaise).','Ouvre la poitrine en rapprochant les omoplates, regard légèrement vers le haut.','Contre l’enroulement des épaules.'),
+        S('Rotation thoracique assis',30,'each','Assis, mains sur les épaules.','Tourne le buste d’un côté en gardant le bassin fixe, reviens, puis de l’autre.','Mobilise le haut du dos.'),
+      ]},
+  ];
+
+  function StretchPlayer({ routine, onClose }){
+    const aff=(window.__affectedSide&&window.__affectedSide()==='d')?'droite':'gauche';
+    const other=aff==='droite'?'gauche':'droite';
+    /* déplie les côtés (chaque → 1er côté atteint puis l'autre) */
+    const steps=React.useMemo(()=>{ const out=[]; routine.steps.forEach(s=>{ if(s.side==='each'){ out.push({...s,sideLabel:aff}); out.push({...s,sideLabel:other}); } else out.push(s); }); return out; },[routine]);
+    const [idx,setIdx]=React.useState(0);
+    const [remaining,setRemaining]=React.useState(steps[0].sec);
+    const [running,setRunning]=React.useState(false);
+    const [done,setDone]=React.useState(false);
+    const fired=React.useRef(false);
+    const cur=steps[idx];
+    React.useEffect(()=>{ fired.current=false; setRemaining(steps[idx].sec); },[idx]);
+    React.useEffect(()=>{ if(!running||remaining<=0) return undefined; const t=setTimeout(()=>setRemaining(r=>r-1),1000); return ()=>clearTimeout(t); },[running,remaining]);
+    React.useEffect(()=>{ if(!running) return; if(remaining<=3&&remaining>=1){ try{beep(640,0.08);}catch(e){} } if(remaining===0&&!fired.current){ fired.current=true; try{beep(880,0.16);}catch(e){} setTimeout(next,120); } },[remaining,running]);
+    function next(){ if(idx<steps.length-1){ setIdx(i=>i+1); } else finish(); }
+    function finish(){ setRunning(false); try{beep(1046,0.3,0.2);}catch(e){} window.__logStretchSession({id:routine.id,title:routine.title,min:routine.min}); setDone(true); }
+    const color=routine.color;
+    if(done){
+      const st=window.__stretchStats();
+      return (
+        <div className="scroll" style={{position:'absolute',inset:0,zIndex:250,background:C.bg,display:'flex',flexDirection:'column',justifyContent:'center',padding:'34px 26px'}}>
+          <div style={{width:66,height:66,borderRadius:'50%',background:'rgba(47,191,161,0.14)',border:'1px solid rgba(47,191,161,0.3)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 18px'}}><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke={C.teal} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,marginBottom:8,textAlign:'center'}}>Séance d’étirement terminée</h2>
+          <p style={{fontSize:13.5,color:C.muted,lineHeight:1.5,marginBottom:22,textAlign:'center'}}>{routine.title} · {routine.min} min. Pratiqué régulièrement, c’est un vrai gain à long terme sur la souplesse et la spasticité.{st.week>1?` ${st.week} séances d’étirement cette semaine 🌿`:''}</p>
+          <Btn variant="primary" size="lg" fullWidth onClick={onClose}>Terminer</Btn>
+        </div>
+      );
+    }
+    const isEach=cur.side==='each';
+    return (
+      <div className="scroll" style={{position:'absolute',inset:0,zIndex:250,background:C.bg,display:'flex',flexDirection:'column'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 20px 6px'}}>
+          <button onClick={onClose} aria-label="Fermer" style={{background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:99,width:36,height:36,cursor:'pointer',color:C.body,fontSize:19,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+          <span style={{fontSize:12,color:C.muted,fontWeight:600}}>{routine.title}</span>
+          <span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.faint}}>{idx+1}/{steps.length}</span>
+        </div>
+        <div style={{display:'flex',gap:4,padding:'8px 20px 0'}}>{steps.map((_,i)=><div key={i} style={{flex:1,height:5,borderRadius:3,background:i<idx?color:i===idx?C.ink:'rgba(14,81,74,0.12)',transition:'all 250ms ease'}}/>)}</div>
+        <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',padding:'8px 22px 26px'}}>
+          <div style={{textAlign:'center',marginBottom:6}}>
+            <span style={{fontSize:11.5,fontWeight:600,color:color,letterSpacing:'0.05em',textTransform:'uppercase'}}>{isEach?`Côté ${cur.sideLabel}`:'Maintien'}</span>
+            <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,lineHeight:1.15,margin:'4px 0 0'}}>{cur.name}</h2>
+          </div>
+          <div onClick={()=>setRunning(r=>!r)} role="button" style={{cursor:'pointer',width:'fit-content',margin:'10px auto 0'}}>
+            <CircleTimer total={cur.sec} remaining={remaining} color={color} running={running} size={172} label={running?'touchez · pause':(remaining<cur.sec?'touchez · reprendre':'touchez · démarrer')} fill/>
+          </div>
+          <div style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:16,padding:'13px 15px',marginTop:18,boxShadow:C.sh}}>
+            <div style={{fontSize:12,color:C.muted,marginBottom:5}}><b style={{color:C.body}}>Position · </b>{cur.position}</div>
+            <div style={{fontSize:13.5,color:C.body,lineHeight:1.5}}>{cur.desc}</div>
+            {cur.conseil&&<div style={{fontSize:12,color:C.tealDk,lineHeight:1.45,marginTop:8,display:'flex',gap:7}}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg><span>{cur.conseil}</span></div>}
+          </div>
+          <button onClick={next} style={{marginTop:14,width:'100%',minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>{idx<steps.length-1?(<>Étirement suivant<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Terminer la séance</>)}</button>
+        </div>
+      </div>
+    );
+  }
+
   function StretchingScreen() {
-    const [done,setDone]=React.useState(new Set());
-    const toggle=id=>setDone(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+    const [active,setActive]=React.useState(null);
+    const stats=window.__stretchStats();
+    const syms=window.__profileSymptoms(); const goals=window.__profileGoals();
+    const recommended = (syms.includes('spasticite')||goals.includes('Gagner en souplesse')) ? 'antispas'
+                      : syms.includes('equilibre') ? 'reveil' : 'soir';
+    const totalSec=r=>r.steps.reduce((s,e)=>s+(e.side==='each'?e.sec*2:e.sec),0);
     return (
       <div style={{minHeight:'100%',padding:'24px'}}>
+        {active && <StretchPlayer routine={active} onClose={()=>setActive(null)}/>}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
-          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Récupération</p>
+          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Mobilité · annexe</p>
           <BrandMark/>
         </div>
         <h2 style={{fontFamily:'Georgia,serif',fontSize:32,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',marginBottom:6}}>Étirements</h2>
-        <p style={{fontSize:13,color:C.muted,marginBottom:24,fontStyle:'italic'}}>Disponibles chaque jour, indépendamment de ta forme.</p>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {window.ED.stretching.map(ex=>{const isDone=done.has(ex.id),aColor=AREA_COLORS[ex.area]||C.teal;const spec=ex.sets&&ex.reps?`${ex.sets} × ${ex.reps}`:ex.duration||'';return(
-            <div key={ex.id} onClick={()=>toggle(ex.id)} style={{background:isDone?'rgba(47,191,161,0.06)':C.card,border:`1px solid ${isDone?'rgba(47,191,161,0.2)':C.line}`,borderRadius:14,padding:'14px 16px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',boxShadow:isDone?'none':C.sh,transition:'all 200ms ease',opacity:isDone?0.7:1}}>
-              <div style={{width:28,height:28,borderRadius:'50%',border:`2px solid ${isDone?C.teal:C.faint}`,background:isDone?'rgba(47,191,161,0.18)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{isDone&&<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.teal} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}</div>
-              <div style={{flex:1}}><div style={{fontSize:15,fontWeight:500,color:isDone?C.muted:C.ink,textDecoration:isDone?'line-through':'none'}}>{ex.name}</div><div style={{display:'flex',alignItems:'center',gap:8,marginTop:4}}><span style={{width:5,height:5,borderRadius:'50%',background:aColor}}/><span style={{fontSize:12,color:C.muted}}>{AREA_LABELS[ex.area]}</span>{spec&&<span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.muted}}>{spec}</span>}</div></div>
-            </div>);})}
+        <p style={{fontSize:13,color:C.muted,marginBottom:18,lineHeight:1.5}}>Des routines guidées à lancer quand tu veux — le matin, le soir, après une journée raide. Indépendantes de ta forme, elles entretiennent ta souplesse sur le long terme.</p>
+        {stats.total>0 && (
+          <div style={{display:'flex',gap:10,marginBottom:20}}>
+            <div style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,padding:'12px',textAlign:'center',boxShadow:C.sh}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:22,fontWeight:500,color:C.ink}}>{stats.week}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>cette semaine</div></div>
+            <div style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,padding:'12px',textAlign:'center',boxShadow:C.sh}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:22,fontWeight:500,color:C.ink}}>{stats.days}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>jours au total</div></div>
+          </div>
+        )}
+        <div style={{display:'flex',flexDirection:'column',gap:11}}>
+          {STRETCH_ROUTINES.map(r=>{ const rec=r.id===recommended; const mn=Math.round(totalSec(r)/60); return (
+            <button key={r.id} onClick={()=>setActive(r)} style={{textAlign:'left',background:C.card,border:`1px solid ${rec?r.color+'66':C.line}`,borderRadius:18,padding:'16px',cursor:'pointer',boxShadow:C.sh,display:'flex',alignItems:'center',gap:14,fontFamily:"'DM Sans',sans-serif",position:'relative'}}>
+              <div style={{width:46,height:46,borderRadius:13,background:r.color+'1A',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{r.icon(r.color)}</svg></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:16,fontWeight:600,color:C.ink}}>{r.title}</span>{rec&&<span style={{fontSize:10,fontWeight:700,color:r.color,background:r.color+'1A',borderRadius:99,padding:'2px 8px',letterSpacing:'0.02em'}}>POUR TOI</span>}</div>
+                <div style={{fontSize:12.5,color:C.muted,marginTop:2}}>{r.sub} · {mn} min · {r.steps.length} étirements</div>
+              </div>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            </button>
+          );})}
         </div>
       </div>
     );
