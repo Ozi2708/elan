@@ -150,6 +150,16 @@ window.__readDiff = function(){ try{ return JSON.parse((window.localStorage&&loc
 window.__elanDaySeed = function(){ const d=new Date(); return d.getFullYear()*400 + d.getMonth()*31 + d.getDate(); };
 /* Forme du jour — dépend UNIQUEMENT du check-in, pas de la séance choisie */
 window.__readiness = function(m){ const {energy=5,fatigue=4,heat=4,sleep=6}=m||{}; const readiness=Math.max(8,Math.min(100,Math.round(energy*7+sleep*4.5-fatigue*4-heat*2.5+20))); const tier=readiness<42?'low':readiness<70?'moderate':'high'; return {readiness,tier}; };
+/* Forme RELATIVE à ta base perso : on note l'écart à TA moyenne, pas un barème universel.
+   Tant que la base n'est pas calibrée (premiers jours), on retombe sur les seuils absolus. */
+window.__fatigueFromReaction = function(avg, prevAvg, prevN){
+  if(prevAvg==null || (prevN||0) < 3) return Math.max(1,Math.min(10,Math.round((avg-200)/35)));   // absolu (calibration)
+  return Math.max(1,Math.min(10,Math.round(5 + (avg-prevAvg)/12)));                                 // relatif : +12 ms vs ta base ≈ +1 pt de fatigue
+};
+window.__energyFromSts = function(reps, prior){
+  if(!prior || (prior.n||0) < 2) return Math.max(1,Math.min(10,Math.round((reps-2)/1.25)));         // absolu (calibration)
+  return Math.max(1,Math.min(10,Math.round(5 + (reps-prior.mean)*1.1)));                             // relatif : +1 lever vs ta moyenne 7 j ≈ +1 pt d'énergie
+};
 window.__suggestIntensity = function(m){ return ({low:'legere',moderate:'moderee',high:'soutenue'})[window.__readiness(m).tier]; };
 const __round=(v,step=1)=>Math.max(step, Math.round(v/step)*step);
 const __rotate=(arr,seed)=>{ if(!arr.length) return arr; const k=((seed%arr.length)+arr.length)%arr.length; return arr.slice(k).concat(arr.slice(0,k)); };
@@ -196,7 +206,11 @@ window.__deriveBaseline=function(t,profile){
   L.balance=__band(Math.max(t.balanceL||0,t.balanceR||0),[4,9,19,29,44,59]);
   L.proprioception=Math.max(0,L.balance-1);
   L.stretching=__band(t.reach!=null?t.reach:-10,[-15,-8,-3,2,7,12]);
-  L.cardio=profile.activity==='actif'?2:profile.activity==='sedentaire'?0:1;
+  /* Releveur du pied (anti pied-tombant) : mesuré directement (relevés de pointe) au lieu d'être laissé à l'aveugle */
+  if(t.dorsi!=null) L.dorsi=__band(t.dorsi,[5,10,16,22,30,40]);
+  /* Cardio : test de marche 6 min mesuré s'il existe, sinon repli sur l'auto-déclaratif */
+  const w6 = (t.walk6!=null) ? t.walk6 : (function(){ try{ const l=window.__readWalk6&&window.__readWalk6(); return (l&&l.length)?l[l.length-1].m:null; }catch(e){ return null; } })();
+  L.cardio = (w6!=null) ? __band(w6,[250,350,450,550,650,750]) : (profile.activity==='actif'?2:profile.activity==='sedentaire'?0:1);
   const sym=profile.symptoms||[];
   if(sym.includes('equilibre')){ L.balance=Math.min(L.balance,2); L.proprioception=Math.min(L.proprioception,1); }
   if(sym.includes('fatigue')){ Object.keys(L).forEach(function(k){ L[k]=Math.min(L[k],4); }); }
@@ -511,7 +525,8 @@ window.__mapExercise = function(ex, diff, ctx){
     else { o.min=ex.min; o.sets=1; o.workSec=(ex.min||0)*60; o.duration=`${ex.min} min`; }
     return o;
   }
-  const level=window.__exLevel(ex.id, o.area);
+  const lvlArea = /^dorsi/.test(ex.id||'') ? 'dorsi' : o.area;   // releveur du pied calibré sur son propre niveau (test de dorsiflexion)
+  const level=window.__exLevel(ex.id, lvlArea);
   /* autorégulation du jour (énergie envelope SEP) : la forme module le VOLUME, pas le niveau acquis */
   const recentLoad = ctx.recentLoad!=null ? ctx.recentLoad : (window.__recentLoadFactor?window.__recentLoadFactor():0);
   let vol = tier==='low'?0.78 : tier==='high'?1.0 : 0.92;
@@ -1342,7 +1357,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     function validateSts(){
       const reps=test.reps; const prior=window.__sts7(true);
       window.__stsPush(reps);
-      const energy=Math.max(1,Math.min(10,Math.round((reps-2)/1.25)));
+      const energy=window.__energyFromSts(reps, prior);
       setTest(t=>({...t,phase:'done',chrono:null,prior:prior,energy}));
       setMetrics(m=>({...m,energy}));
     }
@@ -1372,7 +1387,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             </div>
             {rtRes && <Measured>Fatigue nerveuse</Measured>}
           </div>
-          <ReactionTest onResult={(avg,res)=>{ setRtRes({avg}); setMetrics(m=>({...m,fatigue:Math.max(1,Math.min(10,Math.round((avg-200)/35)))})); }}/>
+          <ReactionTest onResult={(avg,res)=>{ setRtRes({avg}); setMetrics(m=>({...m,fatigue:window.__fatigueFromReaction(avg,res&&res.prevAvg,res&&res.prevN)})); }}/>
         </div>
 
         {/* Météo */}
@@ -2896,13 +2911,14 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     {key:'pushup', label:'Pompes — ton maximum',  short:'Haut du corps',color:'#2FA56B'},
     {key:'plank',  label:'Gainage — planche',     short:'Tronc',        color:'#0E8FB0'},
     {key:'balance',label:'Tenir sur un pied',     short:'Équilibre',    color:'#3A7FCC'},
+    {key:'dorsi',  label:'Relevés de pointe de pied', short:'Releveur du pied', color:'#C77DBB'},
     {key:'reach',  label:'Flexion avant',         short:'Souplesse',    color:'#7BA83E'},
   ];
-  const AREA_NAMES={lower:'Force des jambes',upper:'Haut du corps',core:'Gainage / tronc',balance:'Équilibre',stretching:'Souplesse',cardio:'Cardio / endurance'};
+  const AREA_NAMES={lower:'Force des jambes',upper:'Haut du corps',core:'Gainage / tronc',balance:'Équilibre',dorsi:'Releveur du pied (anti pied-tombant)',stretching:'Souplesse',cardio:'Cardio / endurance'};
   const LVL_WORDS=['Tout en douceur','Base légère','Niveau modéré','Bon niveau','Niveau soutenu','Niveau avancé','Niveau expert'];
 
   function BilanInitial({onDone,onSkip}){
-    const [step,setStep]=React.useState(-1); // -1 bienvenue · 0 cond · 1 profil · 2 neuro · 3-8 tests · 9 synthèse
+    const [step,setStep]=React.useState(-1); // -1 bienvenue · 0 cond · 1 profil · 2 neuro · 3-9 tests · 10 synthèse
     const [saved,setSaved]=React.useState(false);
     const [profile,setProfile]=React.useState({symptoms:[],activity:null,goals:[]});
     const [neuro,setNeuro]=React.useState({reactionMs:null,energy:null});
@@ -2911,8 +2927,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [pushup,setPushup]=React.useState(4);
     const [plank,setPlank]=React.useState(null);
     const [legs,setLegs]=React.useState({g:null,d:null});
+    const [dorsi,setDorsi]=React.useState(12);
     const [reach,setReach]=React.useState(0);
-    const tests={squat,wallSit,pushup,plank,balanceL:legs.g,balanceR:legs.d,reach};
+    const tests={squat,wallSit,pushup,plank,balanceL:legs.g,balanceR:legs.d,dorsi,reach};
     const toggle=(key,v)=>setProfile(p=>{const a=p[key]||[];return {...p,[key]:a.includes(v)?a.filter(x=>x!==v):[...a,v]};});
 
     function finish(){ window.__saveBaseline({profile,neuro,tests}); setSaved(true); }
@@ -3042,8 +3059,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       );
     }
 
-    /* étape 9 — synthèse */
-    if(step===9){
+    /* étape synthèse (après les tests physiques) */
+    if(step===3+PHYS.length){
       const levels=window.__deriveBaseline(tests,profile);
       const rows=Object.keys(AREA_NAMES).map(k=>({k,name:AREA_NAMES[k],lvl:levels[k]||0}));
       return (
@@ -3065,10 +3082,10 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
     /* étapes 3-8 — tests physiques */
     const pi=step-3, meta=PHYS[pi];
-    const valid = meta.key==='squat'?squat!=null : meta.key==='wallSit'?wallSit!=null : meta.key==='pushup'?pushup!=null : meta.key==='plank'?plank!=null : meta.key==='balance'?(legs.g!=null||legs.d!=null) : true;
+    const valid = meta.key==='squat'?squat!=null : meta.key==='wallSit'?wallSit!=null : meta.key==='pushup'?pushup!=null : meta.key==='plank'?plank!=null : meta.key==='balance'?(legs.g!=null||legs.d!=null) : meta.key==='dorsi'?dorsi!=null : true;
     return (
       <div style={{minHeight:'100%',padding:'18px 24px 36px'}}>
-        <Header kicker={`Test ${pi+1}/6`}/>
+        <Header kicker={`Test ${pi+1}/${PHYS.length}`}/>
         <div style={{display:'flex',gap:5,marginBottom:18}}>{PHYS.map((_,i)=><div key={i} style={{flex:1,height:4,borderRadius:2,background:i<pi?C.teal:i===pi?C.ink:'rgba(14,81,74,0.12)',transition:'all 250ms ease'}}/>)}</div>
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}><span style={{width:8,height:8,borderRadius:'50%',background:meta.color}}/><span style={{fontSize:11.5,color:C.muted,letterSpacing:'0.05em',textTransform:'uppercase'}}>{meta.short}</span></div>
         <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',marginBottom:18}}>{meta.label}</h2>
@@ -3084,6 +3101,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           how={["En appui sur les avant-bras et les pieds (ou les genoux), corps bien aligné.","Serre le ventre et les fessiers, ne creuse pas le dos.","Démarre le chrono et tiens la position le plus longtemps possible.","Arrête dès que la position se casse."]}
           safety="Sur les genoux si la version pieds est trop dure — c'est tout aussi valable comme repère."/>}
         {meta.key==='balance'&&<BalanceStep last={null} legs={legs} setLegs={setLegs}/>}
+        {meta.key==='dorsi'&&<CountStep color="#C77DBB" unit="relevés d'affilée" max={60} value={dorsi} setValue={setDorsi}
+          how={["Assis sur une chaise, pieds à plat, talons bien ancrés au sol.","En gardant les talons au sol, lève le plus haut possible l'avant des deux pieds (orteils vers toi), puis repose.","Enchaîne à un rythme régulier, le plus de fois possible.","Arrête quand tu n'arrives plus à lever franchement la pointe — note ton total."]}
+          safety="C'est le muscle qui relève le pied (tibial antérieur), clé contre le pied tombant. On mesure ton endurance, sans forcer dans la douleur." hint="Combien de relevés de pointe peux-tu enchaîner ?"/>}
         {meta.key==='reach'&&<ReachStep last={null} value={reach} setValue={setReach}/>}
 
         <div style={{marginTop:24}}><Btn variant="primary" size="lg" fullWidth onClick={()=>valid&&setStep(step+1)}>{valid?(pi===PHYS.length-1?'Voir ma synthèse ✦':'Continuer →'):'Fais le test pour continuer'}</Btn></div>
