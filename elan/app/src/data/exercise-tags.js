@@ -80,6 +80,7 @@ window.ED_TAGS = {
   'xcore-1':{region:'core', targets:['force-tronc','coordination'], muscles:['abdominaux'],            pattern:'gainage', difficulty:3, load:'faible', position:'allonge',      side:'unilateral-alterne', flags:['floorTransition'] }, // dead bug anti-bascule
   'xcore-2':{region:'core', targets:['force-tronc'],                muscles:['abdominaux','epaules'],  pattern:'gainage', difficulty:3, load:'moyen',  position:'quadrupedie',  side:'bilateral',          flags:['floorTransition'] }, // planche genoux
   'xcore-3':{region:'core', targets:['force-tronc'],                muscles:['abdominaux'],            pattern:'gainage', difficulty:3, load:'moyen',  position:'allonge',      side:'unilateral-chaque',  flags:['floorTransition'] }, // gainage latéral genoux
+  'xcore-6':{region:'core', targets:['force-tronc'],                muscles:['abdominaux','epaules'],  pattern:'gainage', difficulty:4, load:'moyen',  position:'quadrupedie',  side:'bilateral',          flags:['floorTransition'] }, // planche classique (complète)
   'xcore-4':{region:'core', targets:['force-tronc','force-bas'],    muscles:['fessiers','ischios','abdominaux'],pattern:'charniere',difficulty:2,load:'moyen', position:'allonge',     side:'bilateral',          flags:['floorTransition'] }, // pont fessier avec maintien
 
   /* ── Haut du corps ── */
