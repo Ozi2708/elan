@@ -112,13 +112,6 @@ window.ED = {
     {key:'balance', label:'Tenir sur un pied',   short:'Équilibre',        unit:'s',      sub:'meilleure jambe',      higher:true, color:'#3A7FCC'},
     {key:'reach',   label:'Flexion avant',       short:'Souplesse',        unit:'cm',     sub:'mains vers les pieds', higher:true, color:'#7BA83E'},
   ],
-  bilans: [],   /* réel : window.__readBilans() (bilans mensuels enregistrés) */
-  garmin: { sleepScore:78, sleepHours:'7 h 12', restingHR:58, bodyBattery:64, steps:4820 },
-  recentSessions:[],   /* réel : window.__recentSessions() (historique de séances) */
-  week:[
-    {label:'L',done:true,forme:62},{label:'M',done:true,forme:55},{label:'M',done:false,forme:0},
-    {label:'J',done:true,forme:70},{label:'V',done:true,forme:66},{label:'S',done:false,forme:0},{label:'D',done:null,forme:null},
-  ],
   stretching:[
     {id:1,name:'Étirement ischio-jambiers',duration:'45 s',area:'lower'},
     {id:2,name:'Rotation du cou',sets:2,reps:5,area:'upper'},
@@ -128,18 +121,8 @@ window.ED = {
     {id:6,name:'Rotation thoracique',sets:2,reps:8,area:'core'},
   ],
 
-  /* Répartition des efforts — réel : window.__focusAreas() / window.__focusWeeks() */
-  focusAreas:[],
-  focusWeeks:[],
-  /* Trophées / gamification */
-  badges:[
-    {id:'streak',label:'Régularité',sub:'5 jours de suite',earned:true,color:'#F2602E',icon:'flame'},
-    {id:'allround',label:'Tout-terrain',sub:'7 zones cette semaine',earned:true,color:'#2FBFA1',icon:'compass'},
-    {id:'balance',label:'Équilibriste',sub:'15 séances équilibre',earned:false,progress:14,total:15,color:'#3A7FCC',icon:'activity'},
-  ],
-  /* Séances salle + programme hebdo — exercices-data.js (depuis exercices_salle.xlsx) */
+  /* Séances salle — exercices-data.js (depuis exercices_salle.xlsx) */
   gymSessions: window.ED_GYM,
-  weeklyProgram: window.ED_WEEK,
 };
 
 /* ═══ MOTEUR DE PROGRAMME ═══ */
@@ -229,15 +212,27 @@ window.__logSession=function(exId,outcome,area,tier){
   return r;
 };
 /* Échelles de progression — volume d'abord, puis séries, puis tempo / complexité (yeux, double tâche, instabilité) */
-function __stepStrength(level,Sb,Rb){ const cap=15,S=Math.min(Sb||2,3); const steps=[
-  {sets:S,reps:Rb,note:''},
-  {sets:S,reps:Math.min(Rb+2,cap),note:'+ répétitions'},
-  {sets:S,reps:Math.min(Rb+4,cap),note:'+ répétitions'},
-  {sets:Math.min(S+1,3),reps:Rb,note:'+1 série'},
-  {sets:Math.min(S+1,3),reps:Math.min(Rb+2,cap),note:'+1 série, + répétitions'},
-  {sets:Math.min(S+1,3),reps:Math.min(Rb+3,cap),tempo:'descente lente 3 s',note:'tempo lent'},
-  {sets:Math.min(S+1,3),reps:Rb,tempo:'descente 4 s + pause 2 s en bas',note:'tempo lent + pause'},
-]; return steps[Math.max(0,Math.min(level,steps.length-1))]; }
+/* Échelle de progression — volume non-décroissant ET paliers tous distincts (un « trop dur »
+   redescend toujours d'un cran visible). On monte les répétitions, on ajoute une série quand
+   c'est possible, puis on durcit le tempo. Si la base est déjà à 3 séries, on continue en
+   répétitions puis en tempo (pas de 4ᵉ série fictive). */
+function __stepStrength(level,Sb,Rb){ const cap=Math.max(15,Rb+7), S=Math.min(Sb||2,3), S2=Math.min(S+1,3); const r=n=>Math.min(Rb+n,cap);
+  const steps = S2>S
+    ? [ {sets:S, reps:Rb,   note:''},
+        {sets:S, reps:r(2),  note:'+ répétitions'},
+        {sets:S, reps:r(4),  note:'+ répétitions'},
+        {sets:S2,reps:r(2),  note:'+1 série'},
+        {sets:S2,reps:r(4),  note:'+1 série, + répétitions'},
+        {sets:S2,reps:r(4),  tempo:'descente lente 3 s', note:'tempo lent'},
+        {sets:S2,reps:r(6),  tempo:'descente 4 s + pause 2 s en bas', note:'tempo lent + pause'} ]
+    : [ {sets:S, reps:Rb,   note:''},
+        {sets:S, reps:r(2),  note:'+ répétitions'},
+        {sets:S, reps:r(4),  note:'+ répétitions'},
+        {sets:S, reps:r(6),  note:'+ répétitions'},
+        {sets:S, reps:r(6),  tempo:'descente lente 3 s', note:'tempo lent'},
+        {sets:S, reps:r(6),  tempo:'descente 3 s + tenue 1 s en bas', note:'tempo + tenue'},
+        {sets:S, reps:r(6),  tempo:'descente 4 s + pause 2 s en bas', note:'tempo lent + pause'} ];
+  return steps[Math.max(0,Math.min(level,steps.length-1))]; }
 function __stepTime(level,Sb,secB){ const cap=90,S=Sb||2; const steps=[
   {sets:S,sec:secB,note:''},
   {sets:S,sec:Math.min(secB+15,cap),note:'+ durée'},
