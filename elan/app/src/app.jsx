@@ -614,9 +614,14 @@ window.__recentLoadFactor = function(){ let f=0; const W={faible:0.12,moyen:0.28
   return f; };
 
 window.__formeTarget = function(tier){ return tier==='low'?2 : tier==='high'?4 : 3; };
+/* Repos ciblé par jour de semaine (jours de salle) — clé = jour (0=dim … 2=mar), valeur = axes à éviter.
+   Défaut : le mardi, pas de force du haut du corps (récup avant la séance salle « haut » du mercredi). */
+window.__weeklyBlocks = function(){ try{ const s=window.localStorage&&localStorage.getItem('elan_weekly_blocks'); if(s) return JSON.parse(s)||{}; }catch(e){} return {2:['force-haut']}; };
+window.__blockedAxesToday = function(){ const wb=window.__weeklyBlocks()||{}; return wb[String(new Date().getDay())]||wb[new Date().getDay()]||[]; };
 /* Filtre de SÉCURITÉ (exclusion dure, contextuelle) : gating difficulté↔forme + flags + récup */
 window.__exAllowed = function(ex, ctx){
   const diff=ex.difficulty||3; const f=ex.flags||[]; const m=ctx.metrics||{};
+  if(ctx.blockedAxes && ctx.blockedAxes.length && (ex.targets||[]).some(t=>ctx.blockedAxes.indexOf(t)>=0)) return false; // repos ciblé (jour de salle)
   if(ctx.tier==='low' && diff>=4) return false;              // forme basse : pas d'exo dur
   if(ctx.tier==='moderate' && diff>=5) return false;         // forme moyenne : pas d'exo avancé
   if(f.indexOf('heatSensitive')>=0 && (m.heat||0)>=8) return false;
@@ -702,7 +707,7 @@ window.generateProgram = function(metrics, context){
 
   const used=new Set();
   const usedPatterns=new Set();
-  const scoreCtx={ tier, metrics, exAge, priorities:window.__userPriorities(), deficit:window.__axisDeficit(), recovery:window.__muscleRecovery(), formeTarget:window.__formeTarget(tier), usedPatterns };
+  const scoreCtx={ tier, metrics, exAge, priorities:window.__userPriorities(), deficit:window.__axisDeficit(), recovery:window.__muscleRecovery(), formeTarget:window.__formeTarget(tier), usedPatterns, blockedAxes:window.__blockedAxesToday() };
   const scorePick = (cands, count) => {
     const scored=__rotate(cands.filter(e=>!used.has(e.name) && window.__exAllowed(e,scoreCtx)), seed)
       .map(e=>({e,sc:window.__scoreExercise(e,scoreCtx)})).sort((a,b)=>b.sc-a.sc);
@@ -758,6 +763,7 @@ window.generateProgram = function(metrics, context){
   if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'volume réduit et repos allongé, je garde une marge de sécurité.'});
   reasons.push({t:'Structure respectée', d:arche.order==='alt'?'échauffement, travail en alternance, puis retour au calme.':'échauffement, travail ciblé, puis retour au calme.'});
   if(hasDorsi) reasons.push({t:'Releveur du pied', d:'tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
+  if(scoreCtx.blockedAxes && scoreCtx.blockedAxes.length){ const AXLAB={'force-haut':'la force du haut du corps','force-bas':'la force des jambes','force-tronc':'le gainage'}; const lbl=scoreCtx.blockedAxes.map(a=>AXLAB[a]||a).join(', '); reasons.push({t:'Repos ciblé (jour de salle)', d:`aujourd’hui j’évite ${lbl} pour te garder frais avant ta séance en salle.`}); }
   if(Object.keys(scoreCtx.recovery).length) reasons.push({t:'Récupération musculaire', d:'certains muscles sollicités récemment (ou en salle) récupèrent encore — je les épargne aujourd’hui et je rallonge un peu les repos.'});
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
