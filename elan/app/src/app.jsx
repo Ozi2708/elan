@@ -418,12 +418,26 @@ window.__addWalk6=function(meters,dateStr){
   if(ix>=0) list[ix]={date:d,m:m}; else list.push({date:d,m:m});
   list.sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
   try{ if(window.localStorage) localStorage.setItem('elan_walk6',JSON.stringify(list)); }catch(e){}
+  window.__refreshCardioLevel();
   return list;
 };
 window.__removeWalk6=function(date){
   const list=window.__readWalk6().filter(function(e){return e.date!==date;});
   try{ if(window.localStorage) localStorage.setItem('elan_walk6',JSON.stringify(list)); }catch(e){}
+  window.__refreshCardioLevel();
   return list;
+};
+/* Le test de marche 6 min (6MWT) recalibre le niveau cardio de référence à chaque nouvelle mesure
+   — sans refaire tout le bilan. Le 6MWT est la mesure de référence de l'endurance en SEP. */
+window.__refreshCardioLevel=function(){
+  const b=window.__readBaseline(); if(!b||!b.levels) return false;
+  const l=window.__readWalk6(); if(!l||!l.length) return false;
+  const last=l[l.length-1].m;
+  const lvl=__band(last,[250,350,450,550,650,750]);
+  if(b.levels.cardio===lvl) return false;
+  b.levels.cardio=lvl;
+  try{ if(window.localStorage) localStorage.setItem('elan_baseline',JSON.stringify(b)); }catch(e){}
+  return true;
 };
 /* ─── Mesures mensuelles masquées : permet de supprimer une mesure erronée
    sans toucher aux données de démo. Identifiant "moisLabel|clé". ─── */
@@ -670,11 +684,10 @@ window.__sessionBudget = function(metrics, recentLoad){
    gymDays = { '1':['lower'], '3':['upper'] }  (0=dim … 6=sam). */
 window.__GYM_AXIS = { lower:'force-bas', upper:'force-haut' };
 window.__defaultGymDays = function(){ return {1:['lower'], 3:['upper']}; }; // lun jambes, mer haut (planning par défaut)
-window.__readGymConfig = function(){ const s=window.__readSettings(); const gym=(s.gymDays&&typeof s.gymDays==='object')?s.gymDays:window.__defaultGymDays(); const weekendNoLegs=(s.weekendNoLegs!==false); return {gymDays:gym, weekendNoLegs}; };
-window.__saveGymConfig = function(gymDays, weekendNoLegs){ window.__saveSettings({gymDays:gymDays||{}, weekendNoLegs:!!weekendNoLegs}); };
+window.__readGymConfig = function(){ const s=window.__readSettings(); const gym=(s.gymDays&&typeof s.gymDays==='object')?s.gymDays:window.__defaultGymDays(); return {gymDays:gym}; };
+window.__saveGymConfig = function(gymDays){ window.__saveSettings({gymDays:gymDays||{}}); };
 window.__deriveWeeklyBlocks = function(cfg){ cfg=cfg||window.__readGymConfig(); const blocks={}; const add=(d,ax)=>{ d=((d%7)+7)%7; if(!blocks[d]) blocks[d]=[]; if(blocks[d].indexOf(ax)<0) blocks[d].push(ax); };
   Object.keys(cfg.gymDays||{}).forEach(k=>{ const d=parseInt(k,10); if(isNaN(d)) return; (cfg.gymDays[k]||[]).forEach(area=>{ const ax=window.__GYM_AXIS[area]; if(!ax) return; add(d-1,ax); add(d,ax); add(d+1,ax); }); });
-  if(cfg.weekendNoLegs){ add(6,'force-bas'); add(0,'force-bas'); }
   return blocks; };
 window.__weeklyBlocks = function(){ return window.__deriveWeeklyBlocks(); };
 window.__blockedAxesToday = function(){ const wb=window.__weeklyBlocks()||{}; return wb[String(new Date().getDay())]||wb[new Date().getDay()]||[]; };
@@ -2342,7 +2355,6 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [goals,setGoals]=React.useState(window.__profileGoals());
     const gymCfg0=window.__readGymConfig();
     const [gymDays,setGymDays]=React.useState(()=>{ const o={}; Object.keys(gymCfg0.gymDays||{}).forEach(k=>{o[k]=[...(gymCfg0.gymDays[k]||[])];}); return o; });
-    const [weekendNoLegs,setWeekendNoLegs]=React.useState(gymCfg0.weekendNoLegs);
     const SY=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Troubles sensitifs'],['force','Faiblesse musculaire']];
     const GO=['Marcher plus longtemps','Garder l\'équilibre','Me renforcer','Réduire la fatigue','Gagner en souplesse'];
     const DAYS=[[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam'],[0,'Dim']];
@@ -2351,11 +2363,10 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
     const SChip=({on,onClick,children})=>(<button onClick={onClick} style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:500,padding:'9px 14px',borderRadius:99,cursor:'pointer',background:on?'rgba(47,191,161,0.14)':C.bg,color:on?C.tealDk:C.body,border:`1px solid ${on?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{children}</button>);
     function toggleArr(arr,setArr,v,saveKey){ const next=arr.includes(v)?arr.filter(x=>x!==v):[...arr,v]; setArr(next); window.__saveSettings({[saveKey]:next}); }
-    function toggleGym(dayNum,area){ setGymDays(prev=>{ const cur=prev[dayNum]||[]; const na=cur.includes(area)?cur.filter(a=>a!==area):[...cur,area]; const next={...prev}; if(na.length) next[dayNum]=na; else delete next[dayNum]; window.__saveGymConfig(next,weekendNoLegs); return next; }); }
-    function toggleWeekend(){ setWeekendNoLegs(prev=>{ const v=!prev; window.__saveGymConfig(gymDays,v); return v; }); }
+    function toggleGym(dayNum,area){ setGymDays(prev=>{ const cur=prev[dayNum]||[]; const na=cur.includes(area)?cur.filter(a=>a!==area):[...cur,area]; const next={...prev}; if(na.length) next[dayNum]=na; else delete next[dayNum]; window.__saveGymConfig(next); return next; }); }
     const todayNum=new Date().getDay();
     /* aperçu : jours où Élan évitera la force, par groupe */
-    const derived=window.__deriveWeeklyBlocks({gymDays,weekendNoLegs});
+    const derived=window.__deriveWeeklyBlocks({gymDays});
     const DLAB={0:'dim',1:'lun',2:'mar',3:'mer',4:'jeu',5:'ven',6:'sam'};
     const restDaysFor=ax=>[1,2,3,4,5,6,0].filter(d=>(derived[d]||[]).includes(ax)).map(d=>DLAB[d]);
     return (
@@ -2406,13 +2417,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 </div>
               );})}
             </div>
-            <label style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,marginTop:14,paddingTop:14,borderTop:`1px solid ${C.line}`,cursor:'pointer'}}>
-              <span style={{fontSize:12.5,color:C.body,fontWeight:500,lineHeight:1.4}}>Pas de jambes en force le week-end</span>
-              <button onClick={toggleWeekend} aria-pressed={weekendNoLegs} style={{flexShrink:0,width:44,height:26,borderRadius:99,border:'none',cursor:'pointer',padding:2,background:weekendNoLegs?C.teal:C.line2,transition:'background 180ms ease'}}>
-                <span style={{display:'block',width:22,height:22,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transform:weekendNoLegs?'translateX(18px)':'translateX(0)',transition:'transform 180ms ease'}}/>
-              </button>
-            </label>
-            <div style={{marginTop:14,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontSize:11.5,lineHeight:1.55,color:C.muted}}>
+            <div style={{marginTop:16,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontSize:11.5,lineHeight:1.55,color:C.muted}}>
               <div style={{fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',fontWeight:600,color:C.faint,marginBottom:5}}>Ce qu'Élan en déduit</div>
               <div>Force jambes évitée : <b style={{color:C.body}}>{restDaysFor('force-bas').length?restDaysFor('force-bas').join(', '):'aucun jour'}</b></div>
               <div>Force haut du corps évitée : <b style={{color:C.body}}>{restDaysFor('force-haut').length?restDaysFor('force-haut').join(', '):'aucun jour'}</b></div>

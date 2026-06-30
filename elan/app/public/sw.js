@@ -2,7 +2,7 @@
    Stratégie : network-first. On sert toujours la version réseau quand elle est
    disponible (donc jamais de version périmée après un déploiement Vercel), et on
    retombe sur le cache uniquement hors-ligne. */
-const CACHE = 'elan-v20';
+const CACHE = 'elan-v21';
 const SHELL = [
   '/', '/index.html', '/manifest.webmanifest',
   '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png',
