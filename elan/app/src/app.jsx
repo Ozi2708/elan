@@ -219,7 +219,6 @@ window.__affectedSide=function(){ const s=window.__readSettings().affectedSide; 
 /* symptômes/objectifs effectifs : la surcharge des réglages prime sur le bilan initial (édition libre après coup) */
 window.__profileSymptoms=function(){ const st=window.__readSettings(); if(Array.isArray(st.symptoms)) return st.symptoms; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.symptoms)||[]; };
 window.__profileGoals=function(){ const st=window.__readSettings(); if(Array.isArray(st.goals)) return st.goals; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.goals)||[]; };
-window.__saveWeeklyBlocks=function(wb){ try{ if(window.localStorage) localStorage.setItem('elan_weekly_blocks',JSON.stringify(wb||{})); }catch(e){} };
 
 window.__exLevel=function(exId,area){ const p=window.__readProg()[exId];
   if(p&&p.level!=null){ const pen=window.__idlePenalty(p.lastDate); return Math.max(0,(p.level||0)-pen); }
@@ -643,10 +642,20 @@ window.__sessionBudget = function(metrics, recentLoad){
   const rl = recentLoad!=null ? recentLoad : (window.__recentLoadFactor?window.__recentLoadFactor():0);
   return Math.max(2.8, 1.8 + 4.2*(readiness/100) - 1.2*rl);
 };
-/* Repos ciblé par jour de semaine (jours de salle) — clé = jour (0=dim … 6=sam), valeur = axes à éviter.
-   Défaut : mardi → pas de force du haut du corps (avant la salle « haut » du mercredi) ;
-            samedi & dimanche → pas de force du bas du corps. */
-window.__weeklyBlocks = function(){ try{ const s=window.localStorage&&localStorage.getItem('elan_weekly_blocks'); if(s) return JSON.parse(s)||{}; }catch(e){} return {0:['force-bas'],2:['force-haut'],6:['force-bas']}; };
+/* Jours de salle déclarés à l'avance → repos ciblé dérivé automatiquement.
+   On déclare les jours où l'on va en salle et le groupe travaillé (jambes / haut du corps).
+   Élan en déduit une fenêtre de protection de 3 jours par groupe : la veille (ne pas se griller
+   avant la salle), le jour même (déjà travaillé en externe), et le lendemain (récupération ~48h).
+   gymDays = { '1':['lower'], '3':['upper'] }  (0=dim … 6=sam). */
+window.__GYM_AXIS = { lower:'force-bas', upper:'force-haut' };
+window.__defaultGymDays = function(){ return {1:['lower'], 3:['upper']}; }; // lun jambes, mer haut (planning par défaut)
+window.__readGymConfig = function(){ const s=window.__readSettings(); const gym=(s.gymDays&&typeof s.gymDays==='object')?s.gymDays:window.__defaultGymDays(); const weekendNoLegs=(s.weekendNoLegs!==false); return {gymDays:gym, weekendNoLegs}; };
+window.__saveGymConfig = function(gymDays, weekendNoLegs){ window.__saveSettings({gymDays:gymDays||{}, weekendNoLegs:!!weekendNoLegs}); };
+window.__deriveWeeklyBlocks = function(cfg){ cfg=cfg||window.__readGymConfig(); const blocks={}; const add=(d,ax)=>{ d=((d%7)+7)%7; if(!blocks[d]) blocks[d]=[]; if(blocks[d].indexOf(ax)<0) blocks[d].push(ax); };
+  Object.keys(cfg.gymDays||{}).forEach(k=>{ const d=parseInt(k,10); if(isNaN(d)) return; (cfg.gymDays[k]||[]).forEach(area=>{ const ax=window.__GYM_AXIS[area]; if(!ax) return; add(d-1,ax); add(d,ax); add(d+1,ax); }); });
+  if(cfg.weekendNoLegs){ add(6,'force-bas'); add(0,'force-bas'); }
+  return blocks; };
+window.__weeklyBlocks = function(){ return window.__deriveWeeklyBlocks(); };
 window.__blockedAxesToday = function(){ const wb=window.__weeklyBlocks()||{}; return wb[String(new Date().getDay())]||wb[new Date().getDay()]||[]; };
 /* Filtre de SÉCURITÉ (exclusion dure, contextuelle) : gating difficulté↔forme + flags + récup */
 window.__exAllowed = function(ex, ctx){
@@ -2281,17 +2290,24 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [side,setSide]=React.useState(window.__affectedSide());
     const [symptoms,setSymptoms]=React.useState(window.__profileSymptoms());
     const [goals,setGoals]=React.useState(window.__profileGoals());
-    const [wb,setWb]=React.useState(()=>{ const w=window.__weeklyBlocks()||{}; const o={}; Object.keys(w).forEach(k=>{o[k]=[...(w[k]||[])];}); return o; });
+    const gymCfg0=window.__readGymConfig();
+    const [gymDays,setGymDays]=React.useState(()=>{ const o={}; Object.keys(gymCfg0.gymDays||{}).forEach(k=>{o[k]=[...(gymCfg0.gymDays[k]||[])];}); return o; });
+    const [weekendNoLegs,setWeekendNoLegs]=React.useState(gymCfg0.weekendNoLegs);
     const SY=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Troubles sensitifs'],['force','Faiblesse musculaire']];
     const GO=['Marcher plus longtemps','Garder l\'équilibre','Me renforcer','Réduire la fatigue','Gagner en souplesse'];
     const DAYS=[[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam'],[0,'Dim']];
-    const REST_AXES=[['force-bas','Jambes'],['force-haut','Haut du corps']];
+    const GYM_AREAS=[['lower','Jambes'],['upper','Haut du corps']];
     const sec={fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',fontWeight:600,margin:'22px 2px 10px'};
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
     const SChip=({on,onClick,children})=>(<button onClick={onClick} style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:500,padding:'9px 14px',borderRadius:99,cursor:'pointer',background:on?'rgba(47,191,161,0.14)':C.bg,color:on?C.tealDk:C.body,border:`1px solid ${on?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{children}</button>);
     function toggleArr(arr,setArr,v,saveKey){ const next=arr.includes(v)?arr.filter(x=>x!==v):[...arr,v]; setArr(next); window.__saveSettings({[saveKey]:next}); }
-    function toggleBlock(dayNum,axis){ setWb(prev=>{ const cur=prev[dayNum]||[]; const nextAxes=cur.includes(axis)?cur.filter(a=>a!==axis):[...cur,axis]; const next={...prev}; if(nextAxes.length) next[dayNum]=nextAxes; else delete next[dayNum]; window.__saveWeeklyBlocks(next); return next; }); }
+    function toggleGym(dayNum,area){ setGymDays(prev=>{ const cur=prev[dayNum]||[]; const na=cur.includes(area)?cur.filter(a=>a!==area):[...cur,area]; const next={...prev}; if(na.length) next[dayNum]=na; else delete next[dayNum]; window.__saveGymConfig(next,weekendNoLegs); return next; }); }
+    function toggleWeekend(){ setWeekendNoLegs(prev=>{ const v=!prev; window.__saveGymConfig(gymDays,v); return v; }); }
     const todayNum=new Date().getDay();
+    /* aperçu : jours où Élan évitera la force, par groupe */
+    const derived=window.__deriveWeeklyBlocks({gymDays,weekendNoLegs});
+    const DLAB={0:'dim',1:'lun',2:'mar',3:'mer',4:'jeu',5:'ven',6:'sam'};
+    const restDaysFor=ax=>[1,2,3,4,5,6,0].filter(d=>(derived[d]||[]).includes(ax)).map(d=>DLAB[d]);
     return (
       <div className="scroll" style={{position:'absolute',inset:0,zIndex:240,background:C.bg}}>
         <div style={{minHeight:'100%',padding:'22px 22px 40px'}}>
@@ -2327,18 +2343,29 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
           <div style={sec}>Mes jours de salle</div>
           <div style={card}>
-            <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5,marginBottom:14}}>Coche, le jour <b style={{color:C.body}}>précédant</b> ta salle, la zone à laisser au repos. Élan évitera alors de te faire travailler cette zone en force ce jour-là, pour t'y présenter frais.</div>
+            <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5,marginBottom:14}}>Indique simplement quels jours tu vas en salle et le groupe travaillé. Élan protège automatiquement chaque groupe la <b style={{color:C.body}}>veille</b> (pour t'y présenter frais), le <b style={{color:C.body}}>jour même</b> et le <b style={{color:C.body}}>lendemain</b> (récupération).</div>
             <div style={{display:'flex',flexDirection:'column',gap:9}}>
-              {DAYS.map(([dn,lab])=>{ const cur=wb[dn]||[]; const isToday=dn===todayNum; return (
+              {DAYS.map(([dn,lab])=>{ const cur=gymDays[dn]||[]; const isToday=dn===todayNum; return (
                 <div key={dn} style={{display:'flex',alignItems:'center',gap:10}}>
                   <span style={{width:40,flexShrink:0,fontSize:12.5,fontWeight:isToday?700:500,color:isToday?C.tealDk:C.body}}>{lab}{isToday?' •':''}</span>
                   <div style={{display:'flex',gap:7,flex:1}}>
-                    {REST_AXES.map(([ax,al])=>{ const on=cur.includes(ax); return (
-                      <button key={ax} onClick={()=>toggleBlock(dn,ax)} style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600,padding:'8px 4px',borderRadius:10,cursor:'pointer',background:on?'rgba(224,138,11,0.13)':C.bg,color:on?'#B26B05':C.muted,border:`1px solid ${on?'rgba(224,138,11,0.4)':C.line}`,transition:'all 140ms ease'}}>Repos {al.toLowerCase()}</button>
+                    {GYM_AREAS.map(([area,al])=>{ const on=cur.includes(area); return (
+                      <button key={area} onClick={()=>toggleGym(dn,area)} style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600,padding:'8px 4px',borderRadius:10,cursor:'pointer',background:on?'rgba(47,191,161,0.16)':C.bg,color:on?C.tealDk:C.muted,border:`1px solid ${on?'rgba(47,191,161,0.45)':C.line}`,transition:'all 140ms ease'}}>{on?'✓ ':''}Salle {al.toLowerCase()}</button>
                     );})}
                   </div>
                 </div>
               );})}
+            </div>
+            <label style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,marginTop:14,paddingTop:14,borderTop:`1px solid ${C.line}`,cursor:'pointer'}}>
+              <span style={{fontSize:12.5,color:C.body,fontWeight:500,lineHeight:1.4}}>Pas de jambes en force le week-end</span>
+              <button onClick={toggleWeekend} aria-pressed={weekendNoLegs} style={{flexShrink:0,width:44,height:26,borderRadius:99,border:'none',cursor:'pointer',padding:2,background:weekendNoLegs?C.teal:C.line2,transition:'background 180ms ease'}}>
+                <span style={{display:'block',width:22,height:22,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transform:weekendNoLegs?'translateX(18px)':'translateX(0)',transition:'transform 180ms ease'}}/>
+              </button>
+            </label>
+            <div style={{marginTop:14,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontSize:11.5,lineHeight:1.55,color:C.muted}}>
+              <div style={{fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',fontWeight:600,color:C.faint,marginBottom:5}}>Ce qu'Élan en déduit</div>
+              <div>Force jambes évitée : <b style={{color:C.body}}>{restDaysFor('force-bas').length?restDaysFor('force-bas').join(', '):'aucun jour'}</b></div>
+              <div>Force haut du corps évitée : <b style={{color:C.body}}>{restDaysFor('force-haut').length?restDaysFor('force-haut').join(', '):'aucun jour'}</b></div>
             </div>
           </div>
 
