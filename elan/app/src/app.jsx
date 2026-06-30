@@ -614,9 +614,10 @@ window.__recentLoadFactor = function(){ let f=0; const W={faible:0.12,moyen:0.28
   return f; };
 
 window.__formeTarget = function(tier){ return tier==='low'?2 : tier==='high'?4 : 3; };
-/* Repos ciblé par jour de semaine (jours de salle) — clé = jour (0=dim … 2=mar), valeur = axes à éviter.
-   Défaut : le mardi, pas de force du haut du corps (récup avant la séance salle « haut » du mercredi). */
-window.__weeklyBlocks = function(){ try{ const s=window.localStorage&&localStorage.getItem('elan_weekly_blocks'); if(s) return JSON.parse(s)||{}; }catch(e){} return {2:['force-haut']}; };
+/* Repos ciblé par jour de semaine (jours de salle) — clé = jour (0=dim … 6=sam), valeur = axes à éviter.
+   Défaut : mardi → pas de force du haut du corps (avant la salle « haut » du mercredi) ;
+            samedi & dimanche → pas de force du bas du corps. */
+window.__weeklyBlocks = function(){ try{ const s=window.localStorage&&localStorage.getItem('elan_weekly_blocks'); if(s) return JSON.parse(s)||{}; }catch(e){} return {0:['force-bas'],2:['force-haut'],6:['force-bas']}; };
 window.__blockedAxesToday = function(){ const wb=window.__weeklyBlocks()||{}; return wb[String(new Date().getDay())]||wb[new Date().getDay()]||[]; };
 /* Filtre de SÉCURITÉ (exclusion dure, contextuelle) : gating difficulté↔forme + flags + récup */
 window.__exAllowed = function(ex, ctx){
