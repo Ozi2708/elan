@@ -472,7 +472,7 @@ window.ED.gymSeed={};
 window.__mapExercise = function(ex, diff, ctx){
   ctx=ctx||{}; diff=diff||{};
   const tier=ctx.tier||'moderate'; const m=ctx.metrics||{};
-  const fatigue=m.fatigue!=null?m.fatigue:4; const heat=m.heat!=null?m.heat:4;
+  const fatigue=m.fatigue!=null?m.fatigue:4; const heat=m.heat!=null?m.heat:4; const sleep=m.sleep!=null?m.sleep:6;
   const flagged=diff[ex.id];
   const o={id:ex.id,name:ex.name,area:ex.region||ex.area||'lower',phase:ex.phase||'main',type:ex.type||'',desc:ex.desc,equip:ex.equip||[],
     side:ex.side||'both',sideLabel:ex.sideLabel||'côté',
@@ -489,9 +489,14 @@ window.__mapExercise = function(ex, diff, ctx){
   const level=window.__exLevel(ex.id, o.area);
   /* autorégulation du jour (énergie envelope SEP) : la forme module le VOLUME, pas le niveau acquis */
   let vol = tier==='low'?0.78 : tier==='high'?1.0 : 0.92;
-  if(fatigue>=7) vol*=0.88; if(heat>=7) vol*=0.9; vol=Math.max(0.6,vol);
+  if(fatigue>=7) vol*=0.88;
+  if(heat>=7) vol*=0.9; else if(heat>=5) vol*=0.96;   // chaleur modérée : effet léger dès 5
+  if(sleep<=4) vol*=0.92;                              // nuit courte : on allège le volume
+  vol=Math.max(0.6,vol);
   const dropSets=(tier==='low'?1:0)+(fatigue>=8?1:0);
-  const restMult=(tier==='low'||fatigue>=7||heat>=7)?1.35:1.0;
+  let restMult=1.0;
+  if(tier==='low'||fatigue>=7||heat>=7||sleep<=4) restMult=1.35;
+  else if(heat>=5) restMult=1.15;                     // chaleur modérée : un peu plus de récup
   o.level=level;
   const sideSuffix = o.side==='each' ? ` par ${o.sideLabel}` : o.side==='alt' ? ' (en alternant)' : '';
   if(ex.unit==='reps'){
@@ -661,7 +666,8 @@ window.generateProgram = function(metrics, context){
   if(fatigue>=7) reasons.push({t:`Fatigue élevée (${fatigue}/10)`, d:'volume réduit, on entretient sans puiser dans tes réserves.'});
   else if(fatigue<=3) reasons.push({t:`Peu de fatigue (${fatigue}/10)`, d:'tu peux travailler un peu plus franchement aujourd’hui.'});
   if(heat>=7) reasons.push({t:`Chaleur forte (${heat}/10)`, d:'on reste prudent — la chaleur majore les symptômes SEP.'});
-  if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'je garde une marge de sécurité.'});
+  else if(heat>=5) reasons.push({t:`Chaleur modérée (${heat}/10)`, d:'j’allège légèrement le volume — la chaleur fatigue plus vite en SEP.'});
+  if(sleep<=4) reasons.push({t:`Nuit courte (${sleep}/10)`, d:'volume réduit et repos allongé, je garde une marge de sécurité.'});
   reasons.push({t:'Structure respectée', d:arche.order==='alt'?'échauffement, travail en alternance, puis retour au calme.':'échauffement, travail ciblé, puis retour au calme.'});
   if(hasDorsi) reasons.push({t:'Releveur du pied', d:'tibial antérieur — le muscle qui relève le pied, clé contre le pied tombant en SEP. Programmé 2× par semaine, espacé.'});
   const fl=exercises.filter(e=>e.flagged);
@@ -3281,7 +3287,7 @@ function App() {
   /* aligne l'intensité « sur mesure » par défaut sur la forme du jour, une fois le check-in fait */
   React.useEffect(()=>{ if(checkedIn) setCustomIntensity(window.__suggestIntensity(metrics)); },[checkedIn]);
   const [gymId,setGymId]=React.useState(null);
-  const baseProgram=React.useMemo(()=>window.generateProgram(metrics,context),[checkedIn,metrics.energy]);
+  const baseProgram=React.useMemo(()=>window.generateProgram(metrics,context),[checkedIn,metrics.energy,metrics.fatigue,metrics.heat,metrics.sleep]);
   const program=React.useMemo(()=>{
     if(sessionMode==='custom') return window.generateCustomProgram(customGoals,customIntensity,metrics,context);
     if(sessionMode==='gym'&&gymId) return window.buildGymProgram(gymId,context,metrics);
