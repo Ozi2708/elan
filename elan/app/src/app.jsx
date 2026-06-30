@@ -157,9 +157,16 @@ window.__fatigueFromReaction = function(avg, prevAvg, prevN){
   return Math.max(1,Math.min(10,Math.round(5 + (avg-prevAvg)/12)));                                 // relatif : +12 ms vs ta base ≈ +1 pt de fatigue
 };
 window.__energyFromSts = function(reps, prior){
-  if(!prior || (prior.n||0) < 2) return Math.max(1,Math.min(10,Math.round((reps-2)/1.25)));         // absolu (calibration)
-  return Math.max(1,Math.min(10,Math.round(5 + (reps-prior.mean)*1.1)));                             // relatif : +1 lever vs ta moyenne 7 j ≈ +1 pt d'énergie
+  if(!prior || (prior.n||0) < 3) return Math.max(1,Math.min(10,Math.round((reps-2)/1.25)));         // absolu (calibration, 3 mesures comme le test d'éveil)
+  return Math.max(1,Math.min(10,Math.round(5 + (reps-prior.mean)*1.1)));                             // relatif : +1 lever vs ta base ≈ +1 pt d'énergie
 };
+/* Base de référence personnelle — moyenne mobile exponentielle (identique pour le test d'éveil et le lever de chaise) :
+   les calibN premières mesures en moyenne simple, puis chaque nouvelle mesure pèse 20 % (historique 80 %). Pas de fenêtre calendaire. */
+window.__readBase = function(key){ try{ return JSON.parse((window.localStorage&&localStorage.getItem(key)))||{avg:null,n:0}; }catch(e){ return {avg:null,n:0}; } };
+window.__pushBase = function(key,val,calibN){ calibN=calibN||3; const b=window.__readBase(key); const prevAvg=b.avg, prevN=b.n||0; const n=prevN+1;
+  let avg; if(prevAvg==null) avg=val; else if(n<=calibN) avg=Math.round((prevAvg*prevN+val)/n); else avg=Math.round(prevAvg*0.8+val*0.2);
+  try{ if(window.localStorage) localStorage.setItem(key,JSON.stringify({avg,n})); }catch(e){}
+  return {prevAvg,prevN,calibN}; };
 window.__suggestIntensity = function(m){ return ({low:'legere',moderate:'moderee',high:'soutenue'})[window.__readiness(m).tier]; };
 const __round=(v,step=1)=>Math.max(step, Math.round(v/step)*step);
 const __rotate=(arr,seed)=>{ if(!arr.length) return arr; const k=((seed%arr.length)+arr.length)%arr.length; return arr.slice(k).concat(arr.slice(0,k)); };
@@ -436,7 +443,7 @@ window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStor
 window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_sts_base','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
 window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
@@ -1260,12 +1267,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     if(icon==='snow')return <svg {...p}><path d="M16 13a4 4 0 0 0 0-8 5 5 0 0 0-9.6 1.4A3.5 3.5 0 0 0 7 13h9z"/><path d="M9 18h.01M13 18h.01M11 21h.01"/></svg>;
     return <svg {...p}><path d="M17.5 17H7a4 4 0 0 1 0-8 5 5 0 0 1 9.6 1.4A3.5 3.5 0 0 1 17.5 17z"/></svg>;}
 
-  /* Base de référence personnelle : calibration sur les 3 premières mesures, puis moyenne glissante */
-  function readBase(key){ try{ return JSON.parse((window.localStorage&&localStorage.getItem(key)))||{avg:null,n:0}; }catch(e){ return {avg:null,n:0}; } }
-  function pushBase(key,val,calibN){ calibN=calibN||3; const b=readBase(key); const prevAvg=b.avg, prevN=b.n||0; const n=prevN+1;
-    let avg; if(prevAvg==null) avg=val; else if(n<=calibN) avg=Math.round((prevAvg*prevN+val)/n); else avg=Math.round(prevAvg*0.8+val*0.2);
-    try{ if(window.localStorage) localStorage.setItem(key,JSON.stringify({avg,n})); }catch(e){}
-    return {prevAvg,prevN,calibN}; }
+  /* Base de référence personnelle (moyenne mobile exponentielle) — source unique : helpers globaux */
+  const readBase=(key)=>window.__readBase(key);
+  const pushBase=(key,val,calibN)=>window.__pushBase(key,val,calibN);
 
   /* Test d'éveil — temps de réaction (capte la fatigue nerveuse / le stress du jour, instant T) */
   function ReactionTest({onResult}){
@@ -1348,22 +1352,24 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     },[]);
     /* Test express 30 s — Lever de chaise (Sit-to-Stand, validé en clinique SEP) */
     /* Lever de chaise — pré-remplir la valeur depuis ta base + chrono optionnel de 30 s */
-    React.useEffect(()=>{ const s=window.__sts7(false); if(s) setTest(t=>({...t,reps:Math.round(s.mean)})); },[]);
+    React.useEffect(()=>{ const s=window.__readBase('elan_sts_base'); if(s.avg!=null) setTest(t=>({...t,reps:Math.round(s.avg)})); },[]);
     React.useEffect(()=>{
       if(test.chrono==null||test.chrono<=0)return;
       const id=setTimeout(()=>setTest(t=>({...t,chrono:t.chrono-1})),1000);
       return()=>clearTimeout(id);
     },[test.chrono]);
     function validateSts(){
-      const reps=test.reps; const prior=window.__sts7(true);
-      window.__stsPush(reps);
+      const reps=test.reps;
+      const res=window.__pushBase('elan_sts_base', reps, 3);        // base perso EMA, comme le test d'éveil
+      const prior=res.prevAvg!=null?{mean:res.prevAvg,n:res.prevN}:null;
+      window.__stsPush(reps);                                        // on garde le journal daté (historique)
       const energy=window.__energyFromSts(reps, prior);
-      setTest(t=>({...t,phase:'done',chrono:null,prior:prior,energy}));
+      setTest(t=>({...t,phase:'done',chrono:null,prior:prior,calibN:res.calibN,energy}));
       setMetrics(m=>({...m,energy}));
     }
 
     const ready=!!metrics.energy;
-    const stsCalib=!test.prior||test.prior.n<2;
+    const stsCalib=!test.prior||test.prior.n<(test.calibN||3);
     const stsDelta=test.prior?+(test.reps-test.prior.mean).toFixed(1):0;
     return (
       <div style={{minHeight:'100%',padding:'0 24px 40px'}}>
@@ -1434,8 +1440,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <div style={{textAlign:'center',flexShrink:0}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:34,fontWeight:500,color:C.ink,lineHeight:1}}>{test.reps}</span><div style={{fontSize:10,color:C.muted,marginTop:2}}>levers / 30 s</div></div>
               <div style={{flex:1}}>
                 {stsCalib
-                  ? (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>Moyenne 7 j en cours</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>J'établis ta moyenne des 7 derniers jours — encore 1-2 mesures et je comparerai chaque test à cette référence glissante.</p></>)
-                  : (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:stsDelta>=0?C.tealDk:C.amber,background:stsDelta>=0?'rgba(47,191,161,0.12)':'rgba(224,138,11,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>{stsDelta>=0?'+':''}{stsDelta} vs ta moyenne 7 j ({test.prior.mean})</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>{stsDelta>=0?'Au-dessus de ta moyenne — belle forme motrice.':'Sous ta moyenne 7 j — je reste prudent sur l’intensité.'}</p></>)}
+                  ? (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>Calibration {(test.prior?test.prior.n:0)+1}/{test.calibN||3}</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>On établit ta base de référence — encore {Math.max(1,(test.calibN||3)-(test.prior?test.prior.n:0)-1)} mesure{Math.max(1,(test.calibN||3)-(test.prior?test.prior.n:0)-1)>1?'s':''} pour comparer chaque test à TA moyenne.</p></>)
+                  : (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:stsDelta>=0?C.tealDk:C.amber,background:stsDelta>=0?'rgba(47,191,161,0.12)':'rgba(224,138,11,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>{stsDelta>=0?'+':''}{stsDelta} vs ta base ({test.prior.mean})</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>{stsDelta>=0?'Au-dessus de ta base — belle forme motrice.':'Sous ta base — je reste prudent sur l’intensité.'}</p></>)}
                 <button onClick={()=>setTest(t=>({...t,phase:'idle'}))} style={{background:'none',border:'none',padding:0,marginTop:6,cursor:'pointer',color:C.faint,fontSize:11.5,fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
               </div>
             </div>
