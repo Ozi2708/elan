@@ -1670,6 +1670,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [allDone,setAllDone]=React.useState(false);
     const [running,setRunning]=React.useState(false);
     const [remaining,setRemaining]=React.useState(0);
+    const [warmStep,setWarmStep]=React.useState(0);   // étape courante d'un échauffement décomposé (5 × 1 min)
     const [side,setSide]=React.useState('left');
     const sideRef=React.useRef('left'); sideRef.current=side;
     React.useEffect(()=>{ if(!allDone) window.__saveSessionState({exIdx,setNum,done:[...done]}); },[exIdx,setNum,done,allDone]);
@@ -1689,6 +1690,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const sideCap = ex.sideLabel ? (ex.sideLabel.charAt(0).toUpperCase()+ex.sideLabel.slice(1)) : 'Côté';
     const sideHuman = side==='left' ? 'gauche' : (fem?'droite':'droit');
     const isTimed=ex.workSec>0;
+    /* Échauffement décomposé : la description « 1 min … → 1 min … » devient autant de sous-minuteurs enchaînés. */
+    const warmSteps = (ex.phase==='warmup' && (ex.desc||'').includes('→'))
+      ? ex.desc.split('→').map(s=>s.trim().replace(/^\d+\s*min\s*/i,'').replace(/\.$/,'').replace(/^./,c=>c.toUpperCase())).filter(Boolean)
+      : null;
+    const isStepped = !!(warmSteps && warmSteps.length>=2);
+    const stepDur = isStepped ? Math.max(20, Math.round((ex.workSec||0)/warmSteps.length)) : 0;
     const restSec=ex.restSec||0;
     const aColor=AREA_COLORS[ex.area]||C.teal;
     const peak=program.tier==='high';
@@ -1715,7 +1722,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{
       fired.current=false;
       if(phase==='rest'){ const rs=restKindRef.current==='side'?7:restSec; setRemaining(rs); setRunning(true); }
-      else { setRemaining(ex.workSec||0); setRunning(false); }
+      else { setWarmStep(0); setRemaining(isStepped ? stepDur : (ex.workSec||0)); setRunning(false); }
     },[exIdx,setNum,phase]);
     // pré-remplir poids/reps depuis la dernière séance (musculation salle)
     React.useEffect(()=>{ const e=exs[exIdx]; if(e&&e.weighted){ const last=window.__lastStrength(e.id); setLoadW(last?last.weight:10); setLoadR(last?last.reps:(e.reps||8)); } },[exIdx]);
@@ -1733,11 +1740,17 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       if(remaining<=3 && remaining>=1) beep(phase==='rest'?640:920,0.10);
       if(remaining===0 && !fired.current){
         fired.current=true;
+        // échauffement décomposé : enchaîne automatiquement vers l'étape suivante
+        if(phase==='work' && isStepped && warmStep < warmSteps.length-1){
+          beep(880,0.16);
+          setWarmStep(s=>s+1); setRemaining(stepDur); fired.current=false;   // ré-arme pour l'étape suivante
+          return;
+        }
         beep(phase==='rest'?1046:1320,0.30,0.20);
         setRunning(false);
         setTimeout(()=>{ phase==='rest'?endRest():completeSet(); },140);
       }
-    },[remaining,running,phase]);
+    },[remaining,running,phase,warmStep]);
 
     function completeSet(){
       if(isEach && sideRef.current==='left'){ restKindRef.current='side'; setPhase('rest'); return; }
@@ -1764,6 +1777,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     }
     function jump(i){ if(i<0||i>exs.length-1) return; setExIdx(i); setSetNum(1); setPhase('work'); setSide('left'); }
     const startWork=()=>{ unlockAudio(); setRunning(true); };
+    const nextWarmStep=()=>{ fired.current=false; if(warmStep<warmSteps.length-1){ setWarmStep(s=>s+1); setRemaining(stepDur); } else { setRunning(false); completeSet(); } };
 
     const specReps=ex.reps;
     const lastLoad = ex.weighted ? window.__lastStrength(ex.id) : null;
@@ -1878,7 +1892,20 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 </div>
               )}
 
-              {isTimed ? (<>
+              {isTimed && isStepped ? (<>
+                {/* Échauffement guidé : une consigne par minute, enchaînement automatique */}
+                <div style={{textAlign:'center',marginBottom:10}}>
+                  <span style={{fontFamily:"'DM Mono',monospace",fontSize:11.5,color:C.muted,letterSpacing:'0.04em'}}>Étape {warmStep+1} / {warmSteps.length}</span>
+                  <p style={{fontFamily:'Georgia,serif',fontSize:19,fontWeight:600,color:C.ink,lineHeight:1.2,margin:'4px 0 0',minHeight:46,display:'flex',alignItems:'center',justifyContent:'center'}}>{warmSteps[warmStep]}</p>
+                </div>
+                <div onClick={running?()=>setRunning(false):startWork} role="button" title={running?'Pause':'Démarrer'} style={{cursor:'pointer',touchAction:'manipulation',borderRadius:'50%',width:'fit-content',margin:'0 auto'}}>
+                  <CircleTimer total={stepDur} remaining={remaining} color={accent} running={running} size={164} label={running?'touchez · pause':(remaining<stepDur?'touchez · reprendre':'touchez · démarrer')} />
+                </div>
+                <div style={{display:'flex',gap:5,justifyContent:'center',margin:'14px 0 0'}}>
+                  {warmSteps.map((_,i)=><div key={i} style={{width:i===warmStep?22:9,height:9,borderRadius:99,background:i<warmStep?C.teal:i===warmStep?accent:'rgba(14,81,74,0.12)',transition:'all 250ms ease'}}/>)}
+                </div>
+                <button onClick={nextWarmStep} style={{marginTop:12,width:'100%',minHeight:48,borderRadius:16,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8,touchAction:'manipulation'}}>{warmStep<warmSteps.length-1?(<>Étape suivante<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Échauffement terminé</>)}</button>
+              </>) : isTimed ? (<>
                 <div onClick={running?()=>setRunning(false):startWork} role="button" title={running?'Pause':'Démarrer'} style={{cursor:'pointer',touchAction:'manipulation',borderRadius:'50%',width:'fit-content',margin:'0 auto'}}>
                   <CircleTimer total={ex.workSec} remaining={remaining} color={accent} running={running} size={164} label={running?'touchez · pause':(remaining<ex.workSec?'touchez · reprendre':'touchez · démarrer')} />
                 </div>
