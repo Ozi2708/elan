@@ -3673,6 +3673,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{ if(!running||remaining<=0) return undefined; const t=setTimeout(()=>setRemaining(r=>r-1),1000); return ()=>clearTimeout(t); },[running,remaining]);
     React.useEffect(()=>{ if(!running) return; if(remaining<=3&&remaining>=1){ try{beep(640,0.08);}catch(e){} } if(remaining===0&&!fired.current){ fired.current=true; try{beep(880,0.16);}catch(e){} setTimeout(next,120); } },[remaining,running]);
     function next(){ if(idx<steps.length-1){ setIdx(i=>i+1); } else finish(); }
+    function prev(){ if(idx>0){ fired.current=false; setIdx(i=>i-1); } }
     function finish(){ setRunning(false); try{beep(1046,0.3,0.2);}catch(e){} window.__logStretchSession({id:routine.id,title:routine.title,min:routine.min}); setDone(true); }
     const color=routine.color;
     if(done){
@@ -3708,7 +3709,14 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <div style={{fontSize:13.5,color:C.body,lineHeight:1.5}}>{cur.desc}</div>
             {cur.conseil&&<div style={{fontSize:12,color:C.tealDk,lineHeight:1.45,marginTop:8,display:'flex',gap:7}}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg><span>{cur.conseil}</span></div>}
           </div>
-          <button onClick={next} style={{marginTop:14,width:'100%',minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>{idx<steps.length-1?(<>Étirement suivant<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Terminer la séance</>)}</button>
+          <div style={{display:'flex',gap:10,marginTop:14}}>
+            {idx>0 && (
+              <button onClick={prev} style={{flex:'0 0 auto',minWidth:52,minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line}`,cursor:'pointer',color:C.body,display:'flex',alignItems:'center',justifyContent:'center',gap:6,fontSize:14,fontWeight:600,fontFamily:"'DM Sans',sans-serif",padding:'0 14px'}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            <button onClick={next} style={{flex:1,minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>{idx<steps.length-1?(<>Étirement suivant<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Terminer la séance</>)}</button>
+          </div>
         </div>
       </div>
     );
