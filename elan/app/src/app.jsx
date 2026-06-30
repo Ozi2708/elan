@@ -521,7 +521,7 @@ window.__mapExercise = function(ex, diff, ctx){
   if(ex.unit==='reps'){
     const st=__stepStrength(level, ex.sets||2, ex.reps||10);
     const sets=Math.max(1,Math.min(3, st.sets-dropSets));
-    const reps=Math.max(6,Math.min(15, Math.round(st.reps*vol)));
+    const reps=Math.max(6, Math.round(st.reps*vol));   // borne haute gérée par l'échelle (Rb+7), pas de plafond fixe à 15
     o.sets=sets; o.reps=reps; o.tempo=st.tempo||'';
     o.restSec=Math.round((ex.rest||60)*restMult);
     o.doseText=`${sets} série${sets>1?'s':''} de ${reps} répétitions`+sideSuffix+(st.tempo?` · ${st.tempo}`:'');
