@@ -119,6 +119,12 @@ window.ED_TAGS = {
   /* ── Cardio sans matériel (poids du corps) ── */
   'xcard-1':{ region:'cardio', targets:['endurance','coordination'],            muscles:['hanches','mollets'],     pattern:'marche',             difficulty:3, load:'moyen',  position:'debout-appui', side:'bilateral', flags:['heatSensitive','fallRisk'] }, // montées de genoux
   'xcard-2':{ region:'cardio', targets:['endurance','coordination','equilibre'],muscles:['mollets','abducteurs'],  pattern:'equilibre-dynamique',difficulty:2, load:'faible', position:'debout-libre', side:'bilateral', flags:['heatSensitive','fallRisk'] }, // pas chassés
+
+  /* ── Mobilité & anti-spasticité (travail tenu) ── */
+  'xmob-1':{ region:'stretching', targets:['mobilite','spasticite'],            muscles:['mollets'],               pattern:'mobilite', difficulty:1, load:'faible', position:'debout-appui', side:'unilateral-chaque', flags:[] }, // étirement mollet
+  'xmob-2':{ region:'stretching', targets:['mobilite','spasticite'],            muscles:['hanches'],               pattern:'mobilite', difficulty:2, load:'faible', position:'debout-appui', side:'unilateral-chaque', flags:['floorTransition'] }, // psoas / fléchisseurs de hanche
+  'xmob-3':{ region:'stretching', targets:['mobilite','spasticite'],            muscles:['adducteurs'],            pattern:'mobilite', difficulty:1, load:'faible', position:'assis',        side:'bilateral',          flags:['floorTransition'] }, // adducteurs papillon
+  'xmob-4':{ region:'stretching', targets:['mobilite','pied-tombant'],          muscles:['mollets','tibial-anterieur'], pattern:'mobilite', difficulty:1, load:'faible', position:'debout-appui', side:'unilateral-chaque', flags:[] }, // mobilité cheville (dorsiflexion)
 };
 
 /* ── Séances SALLE (méta au niveau séance — load élevé, ~60 h de récup) ──

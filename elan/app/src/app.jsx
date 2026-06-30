@@ -802,6 +802,24 @@ window.generateProgram = function(metrics, context){
   }
   const sessionCost=+acc.toFixed(2);
 
+  /* Mobilité / anti-spasticité : l'axe vit surtout dans la zone stretching, reléguée par les archétypes.
+     On injecte un étirement tenu quand l'axe est en retard — souvent si l'utilisateur le priorise
+     (spasticité / souplesse), plus parcimonieusement sinon (jour doux, ou ≥4 j sans mobilité). */
+  (function injectMobility(){
+    if(blocks.some(e=>(e.targets||[]).includes('mobilite'))) return;
+    const mobPrio=scoreCtx.priorities.has('mobilite')||scoreCtx.priorities.has('spasticite');
+    const mobDef=(scoreCtx.deficit&&scoreCtx.deficit['mobilite'])||0;
+    const histMob=hist.filter(h=>(h.targets||[]).includes('mobilite')).map(h=>dnum(h.date));
+    const lastMob=histMob.length?Math.min.apply(null,histMob):999;
+    // priorité spasticité/souplesse : mobilité régulière (~tous les 2 j). Sinon : plancher hebdo (axe en retard) ou jour doux.
+    const due = mobPrio ? (lastMob>=2) : (mobDef>0 && (arche.gentle||tier==='low'||lastMob>=4));
+    if(!due) return;
+    const cand=scoredPool(byZone('stretching')).filter(e=>!used.has(e.name))[0];
+    if(!cand) return;
+    if(blocks.length>=MAXEX) { const last=blocks.pop(); if(last&&last.name) used.delete(last.name); }
+    blocks.push(cand); used.add(cand.name);
+  })();
+
   /* Releveur du pied (réparti 2×/semaine) */
   if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
     const dx=__rotate(window.ED_DORSI, seed).sort((p,q)=>exAge(q.id)-exAge(p.id))[0]; if(dx) blocks.push(dx);

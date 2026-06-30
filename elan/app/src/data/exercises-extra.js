@@ -123,7 +123,23 @@
     ],
   };
 
-  window.ED_SESSIONS.push(upper, ecc, dual, core, board, lowerStrong, cardioBw);
+  /* ── G · Mobilité & anti-spasticité (TRAVAIL, pas seulement retour au calme) ──
+     Comble le trou : l'axe mobilité n'avait qu'un exercice et l'axe spasticité aucun.
+     Étirements tenus programmés comme du vrai travail (region 'stretching' → zone sélectionnable). */
+  const mobilite = {
+    id:'xMob', seance:'Mobilité & souplesse', title:'Mobilité & anti-spasticité', intent:'mobilite', region:'stretching',
+    equip:['bodyweight'], heatSensitive:false, gentle:true, minEnergy:1, maxEnergy:10,
+    exercises:[
+      warm('stretching','1 min mobilisation des chevilles → 1 min cercles de hanches → 1 min rotations douces du tronc → 1 min respiration ample.','xmob-0'),
+      {name:'Étirement actif du mollet (gastrocnémien)',phase:'main',region:'stretching',unit:'time',sets:3,sec:30,workSec:30,doseText:'3 × 30 secondes par jambe',rest:20,sideLabel:'jambe',muscles:'Mollet (gastrocnémien)',position:'Debout face à un mur, jambe à étirer tendue derrière, talon au sol.',desc:'Avance le bassin vers le mur en gardant le talon arrière ancré et la jambe tendue, jusqu’à sentir l’étirement dans le mollet. Tiens sans rebond.',conseil:'Le mollet est souvent spastique en SEP et tire le pied vers le bas (équin) : un étirement lent et tenu relâche la cheville et améliore la marche.',alternative:'Assis, une serviette autour de l’avant-pied, ramène la pointe vers toi, 3 × 30 s par pied.',id:'xmob-1'},
+      {name:'Étirement des fléchisseurs de hanche (psoas)',phase:'main',region:'stretching',unit:'time',sets:3,sec:30,workSec:30,doseText:'3 × 30 secondes par côté',rest:20,sideLabel:'côté',muscles:'Psoas, fléchisseurs de hanche',position:'En fente, un genou au sol (sur un coussin), l’autre pied bien à plat devant.',desc:'Avance lentement le bassin vers l’avant en restant grand et droit, jusqu’à sentir l’étirement à l’avant de la hanche arrière. Tiens, respire.',conseil:'Le psoas est un muscle clé souvent raide/spastique en SEP : le relâcher ouvre la hanche et facilite la phase d’appui de la marche.',alternative:'Debout, une main en appui, recule une jambe et pousse doucement le bassin vers l’avant, 3 × 30 s par côté.',id:'xmob-2'},
+      {name:'Ouverture des adducteurs (papillon)',phase:'main',region:'stretching',unit:'time',sets:3,sec:40,workSec:40,doseText:'3 × 40 secondes',rest:20,muscles:'Adducteurs (intérieur des cuisses)',position:'Assis, plantes des pieds l’une contre l’autre, talons ramenés vers le bassin, dos droit.',desc:'Laisse les genoux descendre vers le sol sous leur propre poids, sans forcer avec les mains. Grandis-toi à chaque expiration.',conseil:'La spasticité des adducteurs serre les jambes et gêne l’équilibre et l’écartement du pas : une ouverture douce et tenue aide à la relâcher.',alternative:'Allongé sur le dos, jambes écartées contre un mur, laisse la gravité ouvrir doucement, 3 × 40 s.',id:'xmob-3'},
+      {name:'Mobilité de cheville au mur (genou en avant)',phase:'main',region:'stretching',unit:'time',sets:3,sec:30,workSec:30,doseText:'3 × 30 secondes par jambe',rest:20,sideLabel:'jambe',muscles:'Cheville, mollet, mobilité dorsiflexion',position:'Debout face à un mur, un pied avancé, mains au mur.',desc:'Avance le genou vers le mur en gardant le talon au sol, jusqu’à sentir l’étirement dans la cheville/le mollet. Recule un peu le pied si le talon décolle.',conseil:'Gagner en flexion de cheville (dorsiflexion) aide à dérouler le pas et à ne pas accrocher le pied — utile contre le pied tombant.',alternative:'Assis, jambe tendue, ramène la pointe du pied vers toi avec une sangle, 3 × 30 s par jambe.',id:'xmob-4'},
+      {name:'Relâchement & respiration',phase:'cooldown',region:'stretching',unit:'time',sets:1,sec:120,workSec:120,doseText:'2 minutes',rest:0,muscles:'Relâchement global',position:'Allongé ou assis confortablement.',desc:'Respiration lente et ample, relâche les épaules et les jambes à chaque expiration.',conseil:'',alternative:'',id:'xmob-5'},
+    ],
+  };
+
+  window.ED_SESSIONS.push(upper, ecc, dual, core, board, lowerStrong, cardioBw, mobilite);
 
   /* ── Étirements anti-spasticité (pool de retour au calme, utilisé aussi en Sur mesure) ── */
   const sp = [
