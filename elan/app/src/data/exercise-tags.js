@@ -81,6 +81,9 @@ window.ED_TAGS = {
   'xcore-2':{region:'core', targets:['force-tronc'],                muscles:['abdominaux','epaules'],  pattern:'gainage', difficulty:3, load:'moyen',  position:'quadrupedie',  side:'bilateral',          flags:['floorTransition'] }, // planche genoux
   'xcore-3':{region:'core', targets:['force-tronc'],                muscles:['abdominaux'],            pattern:'gainage', difficulty:3, load:'moyen',  position:'allonge',      side:'unilateral-chaque',  flags:['floorTransition'] }, // gainage latéral genoux
   'xcore-6':{region:'core', targets:['force-tronc'],                muscles:['abdominaux','epaules'],  pattern:'gainage', difficulty:4, load:'moyen',  position:'quadrupedie',  side:'bilateral',          flags:['floorTransition'] }, // planche classique (complète)
+  'xcore-7':{region:'core', targets:['force-tronc','coordination'], muscles:['abdominaux','dorsaux','fessiers'],pattern:'gainage',difficulty:3,load:'moyen', position:'quadrupedie',  side:'unilateral-alterne', flags:['floorTransition'] }, // bird-dog (anti-rotation)
+  'xcore-8':{region:'core', targets:['force-tronc'],                muscles:['abdominaux','epaules'],  pattern:'gainage', difficulty:4, load:'moyen',  position:'quadrupedie',  side:'unilateral-alterne', flags:['floorTransition'] }, // planche touches d'épaule (anti-rotation)
+  'xcore-9':{region:'core', targets:['force-tronc'],                muscles:['abdominaux'],            pattern:'gainage', difficulty:4, load:'moyen',  position:'allonge',      side:'unilateral-chaque',  flags:['floorTransition'] }, // gainage latéral complet
   'xcore-4':{region:'core', targets:['force-tronc','force-bas'],    muscles:['fessiers','ischios','abdominaux'],pattern:'charniere',difficulty:2,load:'moyen', position:'allonge',     side:'bilateral',          flags:['floorTransition'] }, // pont fessier avec maintien
 
   /* ── Haut du corps ── */
@@ -88,6 +91,10 @@ window.ED_TAGS = {
   'xup-2': { region:'upper', targets:['force-haut','force-tronc'],muscles:['dorsaux','lombaires','epaules'],pattern:'tirage',difficulty:2, load:'moyen',  position:'allonge',      side:'bilateral', flags:['floorTransition'] }, // superman
   'xup-3': { region:'upper', targets:['force-haut'],              muscles:['bras','epaules'],             pattern:'poussee', difficulty:3, load:'moyen',  position:'assis',        side:'bilateral', flags:[] }, // dips chaise
   'xup-4': { region:'upper', targets:['force-haut'],              muscles:['epaules'],                    pattern:'poussee', difficulty:1, load:'faible', position:'debout-libre', side:'bilateral', flags:[] }, // élévations latérales
+  'xup-6': { region:'upper', targets:['force-haut'],              muscles:['dorsaux','bras'],             pattern:'tirage',  difficulty:3, load:'moyen',  position:'allonge',      side:'bilateral', flags:['floorTransition'] }, // rowing sous table (tirage poids du corps)
+  'xup-7': { region:'upper', targets:['force-haut'],              muscles:['dorsaux','epaules'],          pattern:'tirage',  difficulty:2, load:'faible', position:'allonge',      side:'bilateral', flags:['floorTransition'] }, // Y-T-W au sol (posture)
+  'xup-8': { region:'upper', targets:['force-haut'],              muscles:['pectoraux','bras','epaules'], pattern:'poussee', difficulty:4, load:'moyen',  position:'quadrupedie',  side:'bilateral', flags:['floorTransition'] }, // pompes complètes
+  'xup-9': { region:'upper', targets:['force-haut'],              muscles:['epaules','bras'],             pattern:'poussee', difficulty:4, load:'moyen',  position:'quadrupedie',  side:'bilateral', flags:['floorTransition'] }, // pompes piquées
 
   /* ── Cardio (blocs vélo — tous heatSensitive) ──
      impairs = Bloc facile (difficulty 2 / load faible) ; pairs = Bloc modéré (3 / moyen) */
@@ -105,6 +112,13 @@ window.ED_TAGS = {
   /* ── Releveur du pied (dorsi) ── */
   'dorsi-1':{ region:'proprioception', targets:['pied-tombant'], muscles:['tibial-anterieur'], pattern:'mobilite', difficulty:1, load:'faible', position:'assis',        side:'bilateral', flags:[] },
   'dorsi-2':{ region:'proprioception', targets:['pied-tombant'], muscles:['tibial-anterieur'], pattern:'mobilite', difficulty:2, load:'faible', position:'debout-appui', side:'bilateral', flags:['fallRisk'] },
+  'dorsi-3':{ region:'lower', targets:['pied-tombant','equilibre'], muscles:['tibial-anterieur'], pattern:'marche',    difficulty:3, load:'faible', position:'debout-appui', side:'bilateral',          flags:['fallRisk'] }, // marche sur les talons
+  'dorsi-4':{ region:'lower', targets:['pied-tombant'],             muscles:['tibial-anterieur'], pattern:'mobilite',  difficulty:3, load:'faible', position:'assis',        side:'unilateral-chaque', flags:[] }, // flexion cheville résistée
+  'dorsi-5':{ region:'lower', targets:['pied-tombant'],             muscles:['tibial-anterieur'], pattern:'mobilite',  difficulty:2, load:'faible', position:'assis',        side:'bilateral',          flags:[] }, // relevé de pointes avec tenue
+
+  /* ── Cardio sans matériel (poids du corps) ── */
+  'xcard-1':{ region:'cardio', targets:['endurance','coordination'],            muscles:['hanches','mollets'],     pattern:'marche',             difficulty:3, load:'moyen',  position:'debout-appui', side:'bilateral', flags:['heatSensitive','fallRisk'] }, // montées de genoux
+  'xcard-2':{ region:'cardio', targets:['endurance','coordination','equilibre'],muscles:['mollets','abducteurs'],  pattern:'equilibre-dynamique',difficulty:2, load:'faible', position:'debout-libre', side:'bilateral', flags:['heatSensitive','fallRisk'] }, // pas chassés
 };
 
 /* ── Séances SALLE (méta au niveau séance — load élevé, ~60 h de récup) ──
