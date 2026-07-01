@@ -647,7 +647,20 @@ window.__mapExercise = function(ex, diff, ctx){
   o.nextCue=level<window.__exMax?__nextNote(ex,level):'';
   return o;
 };
-function __estSec(ex){ if(ex.unit==='reps') return (ex.sets||1)*((ex.reps||10)*3 + (ex.rest||0)); if(ex.unit==='time') return (ex.sets||1)*((ex.sec||0)+(ex.rest||0)); return (ex.workSec||0)+(ex.rest||0); }
+/* Durée estimée d'un exercice (s) — basée sur les doses RÉELLES (après adaptation) :
+   ~3 s par répétition, le temps de maintien pour les exos chronométrés, le repos après chaque
+   série, et le doublement pour les exos faits des deux côtés (+ ~7 s de transition de côté). */
+function __estSec(e){
+  const sets=e.sets||1;
+  const rest=(e.restSec!=null?e.restSec:(e.rest||0));
+  let workPerSet;
+  if(e.sec) workPerSet=e.sec;
+  else if(e.reps) workPerSet=(e.reps||10)*3;
+  else if(e.min) return (e.min||0)*60;                 // cardio/échauffement : durée directe
+  else workPerSet=(e.workSec||0);
+  const perSet = (e.side==='each') ? (2*workPerSet + 7 + rest) : (workPerSet + rest);
+  return sets*perSet;
+}
 function __sessionDuration(exs){ return Math.max(5, Math.round(exs.reduce((s,e)=>s+__estSec(e),0)/60)); }
 /* trie échauffement → travail → retour au calme tout en gardant l'ordre du kiné à l'intérieur */
 const __PHASE={warmup:0,main:1,cooldown:2};
@@ -849,7 +862,7 @@ window.generateProgram = function(metrics, context){
     if(blocks.length>=MINEX && acc>=budget) break;     // budget atteint (min 3 garanti)
     blocks.push(ex); used.add(ex.name); if(ex.pattern) usedPatterns.add(ex.pattern); acc+=window.__exCost(ex);
   }
-  const sessionCost=+acc.toFixed(2);
+  let sessionCost=+acc.toFixed(2);
 
   /* Mobilité / anti-spasticité : l'axe vit surtout dans la zone stretching, reléguée par les archétypes.
      On injecte un étirement tenu quand l'axe est en retard — souvent si l'utilisateur le priorise
@@ -873,6 +886,21 @@ window.generateProgram = function(metrics, context){
   if(window.ED_DORSI && window.ED_DORSI.length && window.__dorsiDueToday && window.__dorsiDueToday()){
     const dx=__rotate(window.ED_DORSI, seed).sort((p,q)=>exAge(q.id)-exAge(p.id))[0]; if(dx) blocks.push(dx);
   }
+
+  /* Plafond de DURÉE — une séance SEP quotidienne doit rester raisonnable (la fatigue est un symptôme).
+     On estime la durée réelle (doses mappées) et on retire les exos les moins prioritaires si ça dépasse,
+     en protégeant le releveur du pied et la mobilité, sans descendre sous MINEX. */
+  const durCap = tier==='low'?26 : tier==='high'?42 : 34;
+  const OVERHEAD_MIN = 7;   // échauffement + retour au calme
+  const blocksMin = bl => Math.round(bl.reduce((s,ex)=>s+__estSec(window.__mapExercise(ex, diff, {tier, metrics, recentLoad})),0)/60);
+  let guard=0;
+  while(blocks.length>MINEX && (OVERHEAD_MIN+blocksMin(blocks))>durCap && guard++<12){
+    let idx=-1;
+    for(let i=blocks.length-1;i>=0;i--){ const id=blocks[i].id||''; if(!/^dorsi/.test(id) && !(blocks[i].targets||[]).includes('mobilite')){ idx=i; break; } }
+    if(idx<0) break;
+    const rm=blocks.splice(idx,1)[0]; if(rm&&rm.name) used.delete(rm.name);
+  }
+  sessionCost=+blocks.reduce((s,ex)=>s+window.__exCost(ex),0).toFixed(2);
   const hasDorsi = blocks.some(e=>/^dorsi/.test(e.id||''));
 
   /* Échauffement (zone dominante) + retour au calme (1, ou 2 si récup/mobilité) */
@@ -881,7 +909,7 @@ window.generateProgram = function(metrics, context){
   const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
-  const duration = __sessionDuration(seq);
+  const duration = __sessionDuration(exercises);   // doses réelles (après adaptation), pas les valeurs de base
   const intensity = (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
   const __mains=exercises.filter(e=>e.phase==='main');
   const progTargets=[...new Set(__mains.flatMap(e=>e.targets||[]))];
@@ -958,7 +986,7 @@ window.generateCustomProgram = function(goals, intensity, metrics, context){
   const cTargets=[...new Set(__cm.flatMap(e=>e.targets||[]))];
   const cMuscles=[...new Set(__cm.flatMap(e=>e.muscleTags||[]))];
   const cLoad=__cm.some(e=>e.load==='eleve')?'eleve':(__cm.filter(e=>e.load==='moyen').length>=__cm.length/2?'moyen':'faible');
-  return { title:'Séance sur mesure', intensity:meta.label, duration:__sessionDuration(seq), readiness, tier, exercises, reasons, targets:cTargets, muscles:cMuscles, load:cLoad, modules:null, moduleEndIdx:null, custom:true, goals };
+  return { title:'Séance sur mesure', intensity:meta.label, duration:__sessionDuration(exercises), readiness, tier, exercises, reasons, targets:cTargets, muscles:cMuscles, load:cLoad, modules:null, moduleEndIdx:null, custom:true, goals };
 };
 
 /* ═══ SÉANCES SALLE (depuis exercices_salle — ordre du kiné conservé) ═══ */
@@ -972,7 +1000,7 @@ window.buildGymProgram = function(id, context, metrics){
   if(fl.length) reasons.push({t:'Difficulté conservée', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')}.`});
   reasons.push({t:'Séance salle dédiée', d:'enchaînement et doses conçus pour la salle.'});
   reasons.push({t:'Charge élevée prise en compte', d:'la salle sollicite fort tes muscles : je les laisserai récupérer ~2 jours et j’orienterai les prochaines séances en conséquence.'});
-  return { title:s.title, intensity:'Salle', duration:__sessionDuration(s.exercises), readiness, tier, exercises, reasons,
+  return { title:s.title, intensity:'Salle', duration:__sessionDuration(exercises), readiness, tier, exercises, reasons,
     region:s.regionTag||'', intent:'force', targets:s.targets||[], muscles:s.muscleTags||[], load:s.load||'eleve',
     modules:null, moduleEndIdx:null, gym:true, gymId:id };
 };
