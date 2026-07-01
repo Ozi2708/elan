@@ -1033,6 +1033,18 @@ function beep(freq=880,dur=0.12,gain=0.16){
   }catch(e){}
 }
 function unlockAudio(){ try{ _ac=_ac||new (window.AudioContext||window.webkitAudioContext)(); if(_ac.state==='suspended')_ac.resume(); }catch(e){} }
+/* Vibration légère (retour haptique) — utile quand le son est coupé (salle, silencieux).
+   Ignoré silencieusement sur iOS/desktop qui ne supportent pas l'API. */
+function vibe(pattern){ try{ if(navigator&&navigator.vibrate) navigator.vibrate(pattern); }catch(e){} }
+/* Wake Lock : empêche l'écran de s'éteindre pendant la séance (sinon on perd le minuteur
+   pendant un maintien). Re-demande le verrou au retour d'arrière-plan. Renvoie un cleanup. */
+function keepScreenAwake(){
+  let lock=null, alive=true;
+  const acquire=async()=>{ try{ if(alive&&document.visibilityState==='visible'&&navigator.wakeLock){ lock=await navigator.wakeLock.request('screen'); } }catch(e){} };
+  const onVis=()=>{ if(document.visibilityState==='visible') acquire(); };
+  acquire(); document.addEventListener('visibilitychange',onVis);
+  return ()=>{ alive=false; document.removeEventListener('visibilitychange',onVis); try{ if(lock) lock.release(); }catch(e){} lock=null; };
+}
 
 /* ── Button ── */
 function Btn({ variant='primary', size='md', fullWidth, disabled, onClick, children }) {
@@ -1283,7 +1295,7 @@ function BrandMark(){
   );
 }
 
-Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, CircleTimer, BottomNav, BrandMark, LogoMark, AREA_LABELS, AREA_COLORS, beep, unlockAudio });
+Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, CircleTimer, BottomNav, BrandMark, LogoMark, AREA_LABELS, AREA_COLORS, beep, unlockAudio, vibe, keepScreenAwake });
 })();
 /* components block 2 */
 (function(){
@@ -1757,7 +1769,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 })();
 /* components block 4 */
 (function(){
-  const { Btn, CircleTimer, AREA_LABELS, AREA_COLORS, beep, unlockAudio, C } = window.EC;
+  const { Btn, CircleTimer, AREA_LABELS, AREA_COLORS, beep, unlockAudio, vibe, keepScreenAwake, C } = window.EC;
 
   function Stepper({label,value,step,min,unit,onChange}){
     const bs={width:50,height:50,borderRadius:14,border:`1px solid ${C.line}`,background:C.card,color:C.tealDk,fontSize:26,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'DM Sans',sans-serif",lineHeight:1,flexShrink:0,padding:0,touchAction:'manipulation'};
@@ -1787,6 +1799,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [side,setSide]=React.useState(()=>window.__affectedSide&&window.__affectedSide()==='d'?'right':'left');
     const sideRef=React.useRef('left'); sideRef.current=side;
     React.useEffect(()=>{ if(!allDone) window.__saveSessionState({exIdx,setNum,done:[...done]}); },[exIdx,setNum,done,allDone]);
+    /* Garde l'écran allumé pendant toute la séance (maintiens, mains occupées). */
+    React.useEffect(()=>keepScreenAwake(),[]);
     const fired=React.useRef(false);
     const restKindRef=React.useRef('set');   // 'set' (entre séries) | 'next' (entre exercices)
     const [flagOpen,setFlagOpen]=React.useState(false);
@@ -1868,11 +1882,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         fired.current=true;
         // échauffement décomposé : enchaîne automatiquement vers l'étape suivante
         if(phase==='work' && isStepped && warmStep < warmSteps.length-1){
-          beep(880,0.16);
+          beep(880,0.16); vibe(60);
           setWarmStep(s=>s+1); setRemaining(stepDur); fired.current=false;   // ré-arme pour l'étape suivante
           return;
         }
         beep(phase==='rest'?1046:1320,0.30,0.20);
+        vibe(phase==='rest'?[90,60,90]:180);   // fin repos : double buzz « on repart » · fin d'effort : buzz franc
         setRunning(false);
         setTimeout(()=>{ phase==='rest'?endRest():completeSet(); },140);
       }
@@ -1967,9 +1982,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <button onClick={onBack} title="Retour" style={{width:46,height:46,borderRadius:'50%',background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',touchAction:'manipulation'}}>
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <div style={{textAlign:'center'}}>
-            <p style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>{program.title}</p>
-            <p style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.body,marginTop:2}}>Exercice {exIdx+1} / {exs.length}</p>
+          <div style={{textAlign:'center',flex:1,minWidth:0,padding:'0 12px'}}>
+            <p style={{fontSize:10.5,color:C.muted,letterSpacing:'0.05em',textTransform:'uppercase',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{program.title}</p>
+            <p style={{fontFamily:"'DM Mono',monospace",fontSize:12.5,color:C.body,marginTop:2}}>Exercice {exIdx+1} / {exs.length}</p>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:5,background:C.card,borderRadius:99,padding:'6px 11px',border:`1px solid ${C.line}`,boxShadow:C.sh}}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
@@ -2034,7 +2049,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 <div onClick={running?()=>setRunning(false):startWork} role="button" title={running?'Pause':'Démarrer'} style={{cursor:'pointer',touchAction:'manipulation',borderRadius:'50%',width:'fit-content',margin:'0 auto'}}>
                   <CircleTimer total={ex.workSec} remaining={remaining} color={accent} running={running} size={164} label={running?'touchez · pause':(remaining<ex.workSec?'touchez · reprendre':'touchez · démarrer')} />
                 </div>
-                <button onClick={completeSet} style={{marginTop:14,width:'100%',minHeight:48,borderRadius:16,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8,touchAction:'manipulation'}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Valider la série</button>
+                <button onClick={()=>{vibe(30);completeSet();}} style={{marginTop:14,width:'100%',minHeight:48,borderRadius:16,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8,touchAction:'manipulation'}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Valider la série</button>
               </>) : ex.weighted ? (<>
                 {lastLoad&&<div style={{textAlign:'center',marginBottom:14,fontSize:12.5,color:C.muted}}>Dernière séance : <b style={{color:C.tealDk,fontFamily:"'DM Mono',monospace"}}>{lastLoad.weight} kg × {lastLoad.reps}</b> · vise un peu plus !</div>}
                 <div style={{display:'flex',gap:10,marginBottom:14}}>
@@ -2042,16 +2057,16 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                   <Stepper label="Répétitions" value={loadR} step={1} min={1} onChange={setLoadR}/>
                 </div>
                 <p style={{textAlign:'center',fontSize:12,color:C.faint,marginBottom:16}}>Cible : {ex.doseText}</p>
-                <Btn variant={peak?'energy':'primary'} size="lg" fullWidth onClick={completeSet}>{setNum<sets?`Série ${setNum} faite ✓`:(exIdx===exs.length-1?'Terminer la séance ✦':'Exercice terminé →')}</Btn>
+                <Btn variant={peak?'energy':'primary'} size="lg" fullWidth onClick={()=>{vibe(30);completeSet();}}>{setNum<sets?`Série ${setNum} faite ✓`:(exIdx===exs.length-1?'Terminer la séance ✦':'Exercice terminé →')}</Btn>
               </>) : (<>
-                <div onClick={completeSet} role="button" title="Valider" style={{cursor:'pointer',touchAction:'manipulation',borderRadius:20,padding:'8px 0 4px',transition:'background 160ms'}}>
+                <div onClick={()=>{vibe(30);completeSet();}} role="button" title="Valider" style={{cursor:'pointer',touchAction:'manipulation',borderRadius:20,padding:'8px 0 4px',transition:'background 160ms'}}>
                   <div style={{textAlign:'center',margin:'4px 0 4px'}}>
                     <span style={{fontFamily:"'DM Mono',monospace",fontSize:64,fontWeight:500,color:accent,lineHeight:1}}>{specReps}</span>
                     <span style={{display:'block',fontSize:13,color:C.muted,marginTop:6,letterSpacing:'0.04em'}}>répétitions</span>
                   </div>
                   <p style={{textAlign:'center',fontSize:12,color:C.faint,margin:'6px 0 0',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11.5V6a1.5 1.5 0 0 1 3 0v5"/><path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V11"/><path d="M15 11V6.5a1.5 1.5 0 0 1 3 0V13a6 6 0 0 1-6 6h-1.5a4 4 0 0 1-2.8-1.2l-3-3a1.5 1.5 0 0 1 2.1-2.1L9 14.5"/></svg>Touchez pour valider</p>
                 </div>
-                <Btn variant={peak?'energy':'primary'} size="lg" fullWidth onClick={completeSet}>{setNum<sets?'Série terminée ✓':(exIdx===exs.length-1?'Terminer la séance ✦':'Exercice terminé →')}</Btn>
+                <Btn variant={peak?'energy':'primary'} size="lg" fullWidth onClick={()=>{vibe(30);completeSet();}}>{setNum<sets?'Série terminée ✓':(exIdx===exs.length-1?'Terminer la séance ✦':'Exercice terminé →')}</Btn>
               </>)}
               {/* Feedback : effort ressenti (RPE) → autorégulation graduée + infos + signalement gêne */}
               {!ex.weighted && (ex.phase||'main')==='main' && !isFlagged && (
