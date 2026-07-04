@@ -339,6 +339,58 @@ window.__weekDoneCount=function(){
   const cut=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
   return [...new Set(window.__sessHistory().filter(e=>e.date>cut).map(e=>e.date))].length;
 };
+window.__WEEK_GOAL=4;
+/* Régularité HEBDO : la bonne métrique en SEP — les jours de repos sont prescrits, ils ne
+   « cassent » rien. Une semaine est réussie à ≥ 4 jours actifs ; on compte les semaines ISO
+   réussies consécutives (la semaine en cours compte si déjà réussie, sinon elle ne casse pas). */
+window.__weekDays=function(){ const m={}; window.__sessHistory().forEach(e=>{ const k=window.__isoWeekKey(e.date); (m[k]=m[k]||new Set()).add(e.date); }); return m; };
+window.__weekStreak=function(){
+  const m=window.__weekDays(); const goal=window.__WEEK_GOAL;
+  const wk=d=>window.__isoWeekKey(d);
+  let n=0; let cur=new Date();
+  if((m[wk(cur)]||new Set()).size>=goal){ n=1; }
+  cur=new Date(cur.getTime()-7*86400000);
+  while((m[wk(cur)]||new Set()).size>=goal){ n++; cur=new Date(cur.getTime()-7*86400000); }
+  return n;
+};
+window.__bestWeekStreak=function(){
+  const m=window.__weekDays(); const goal=window.__WEEK_GOAL;
+  const keys=Object.keys(m).filter(k=>m[k].size>=goal);
+  if(!keys.length) return window.__weekStreak();
+  /* reconstruit les suites de semaines réussies en balayant semaine par semaine depuis la plus ancienne */
+  const all=Object.keys(m).sort(); let best=0,run=0;
+  let d=new Date(); const seen=[];
+  for(let i=0;i<80;i++){ seen.unshift(window.__isoWeekKey(d)); d=new Date(d.getTime()-7*86400000); }
+  seen.forEach(k=>{ if((m[k]||new Set()).size>=goal){ run++; best=Math.max(best,run); } else run=0; });
+  return Math.max(best, window.__weekStreak());
+};
+/* ─── Tendance multi-jours (signal de surmenage / poussée) ───
+   Forme des ~3 derniers jours nettement sous la moyenne des 2-3 semaines précédentes
+   → on propose une semaine allégée (jamais imposée). */
+window.__formeTrend=function(){
+  const log=window.__readFormeLog?window.__readFormeLog():[];
+  if(log.length<6) return null;
+  const now=Date.now(); const age=e=>(now-new Date(e.date).getTime())/86400000;
+  const recent=log.filter(e=>age(e)<=3.5);
+  const prev=log.filter(e=>{ const a=age(e); return a>3.5 && a<=24; });
+  if(recent.length<2 || prev.length<4) return null;
+  const avg=a=>a.reduce((s,e)=>s+e.forme,0)/a.length;
+  const rA=avg(recent), pA=avg(prev);
+  const drop=Math.round(pA-rA);
+  return drop>=14 ? {drop, recent:Math.round(rA), base:Math.round(pA)} : null;
+};
+/* Semaine allégée : 7 jours de volume réduit, repos rallongés, pas de capitalisation de niveau. */
+window.__easyWeek=function(){ try{ const r=JSON.parse((window.localStorage&&localStorage.getItem('elan_easyweek'))||'null'); return (r&&r.until&&r.until>=window.__today())?r:null; }catch(e){ return null; } };
+window.__startEasyWeek=function(){ const rec={from:window.__today(),until:new Date(Date.now()+6*86400000).toISOString().slice(0,10)}; try{ if(window.localStorage) localStorage.setItem('elan_easyweek',JSON.stringify(rec)); }catch(e){} return rec; };
+window.__stopEasyWeek=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_easyweek'); }catch(e){} };
+window.__easyWeekDay=function(){ const r=window.__easyWeek(); return r?Math.min(7,window.__daysSince(r.from)+1):0; };
+/* proposition : tendance détectée + pas déjà en semaine allégée + pas refusée cette semaine ISO */
+window.__easyWeekDismiss=function(){ try{ if(window.localStorage) localStorage.setItem('elan_easyweek_dismiss',window.__isoWeekKey()); }catch(e){} };
+window.__easyWeekProposal=function(){
+  if(window.__easyWeek()) return null;
+  try{ if(window.localStorage&&localStorage.getItem('elan_easyweek_dismiss')===window.__isoWeekKey()) return null; }catch(e){}
+  return window.__formeTrend();
+};
 /* ─── Releveur du pied (tibial antérieur) : garantir ≥ 2 séances / semaine ISO ─── */
 window.__isoWeekKey=function(dt){ const d=dt?new Date(dt):new Date(); const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day); const ys=new Date(Date.UTC(t.getUTCFullYear(),0,1)); const wk=Math.ceil((((t-ys)/86400000)+1)/7); return t.getUTCFullYear()+'-W'+wk; };
 window.__dorsiWeekCount=function(){ const wk=window.__isoWeekKey(); return window.__sessHistory().filter(e=>e.dorsi && window.__isoWeekKey(e.date)===wk).length; };
@@ -580,7 +632,7 @@ window.__sessAreas=function(e){ if(e.areas&&e.areas.length) return e.areas; retu
 window.__focusAreas=function(days){ days=days||30; const cut=new Date(Date.now()-days*86400000).toISOString().slice(0,10); const hist=window.__sessHistory().filter(function(e){return e.date>cut;}); const counts={}; hist.forEach(function(e){ window.__sessAreas(e).forEach(function(a){ counts[a]=(counts[a]||0)+1; }); }); return Object.keys(counts).map(function(k){return {key:k,count:counts[k]};}).sort(function(a,b){return b.count-a.count;}); };
 window.__focusWeeks=function(){ const hist=window.__sessHistory(); if(!hist.length) return []; const map={}; hist.forEach(function(e){ const k=window.__isoWeekKey(e.date); if(!map[k]) map[k]={key:k}; window.__sessAreas(e).forEach(function(a){ map[k][a]=(map[k][a]||0)+1; }); }); const keys=Object.keys(map).sort(); const last4=keys.slice(-4); return last4.map(function(k){ const o=Object.assign({},map[k]); o.label='S'+(k.split('W')[1]||''); return o; }); };
 /* Trophées calculés sur les données réelles. */
-window.__focusBadges=function(){ const streak=window.__streak(); const wkCut=new Date(Date.now()-7*86400000).toISOString().slice(0,10); const wkZones=new Set(); window.__sessHistory().filter(function(e){return e.date>wkCut;}).forEach(function(e){ window.__sessAreas(e).forEach(function(a){wkZones.add(a);}); }); const balCount=window.__sessHistory().filter(function(e){return window.__sessAreas(e).indexOf('balance')>=0;}).length; return [ {id:'streak',label:'Régularité',sub:streak+' jour'+(streak>1?'s':'')+' de suite',earned:streak>=3,progress:streak,total:3,color:'#F2602E',icon:'flame'}, {id:'allround',label:'Tout-terrain',sub:wkZones.size+' zones cette semaine',earned:wkZones.size>=5,progress:wkZones.size,total:5,color:'#2FBFA1',icon:'compass'}, {id:'balance',label:'Équilibriste',sub:balCount+' séances équilibre',earned:balCount>=15,progress:balCount,total:15,color:'#3A7FCC',icon:'activity'} ]; };
+window.__focusBadges=function(){ const streak=window.__streak(); const wkCut=new Date(Date.now()-7*86400000).toISOString().slice(0,10); const wkZones=new Set(); window.__sessHistory().filter(function(e){return e.date>wkCut;}).forEach(function(e){ window.__sessAreas(e).forEach(function(a){wkZones.add(a);}); }); const balCount=window.__sessHistory().filter(function(e){return window.__sessAreas(e).indexOf('balance')>=0;}).length; const wkS=window.__weekStreak?window.__weekStreak():0; return [ {id:'streak',label:'Régularité',sub:wkS+' semaine'+(wkS>1?'s':'')+' réussie'+(wkS>1?'s':''),earned:wkS>=2,progress:wkS,total:2,color:'#F2602E',icon:'flame'}, {id:'allround',label:'Tout-terrain',sub:wkZones.size+' zones cette semaine',earned:wkZones.size>=5,progress:wkZones.size,total:5,color:'#2FBFA1',icon:'compass'}, {id:'balance',label:'Équilibriste',sub:balCount+' séances équilibre',earned:balCount>=15,progress:balCount,total:15,color:'#3A7FCC',icon:'activity'} ]; };
 
 /* ─── Récap périodique : hebdo (dimanche soir) + mensuel (1er du mois) ─── */
 window.__recapSeen=function(kind,key){ try{ return (window.localStorage&&localStorage.getItem('elan_recap_'+kind))===key; }catch(e){ return false; } };
@@ -627,12 +679,14 @@ window.__mapExercise = function(ex, diff, ctx){
   if(heat>=7) vol*=0.9; else if(heat>=5) vol*=0.96;   // chaleur modérée : effet léger dès 5
   if(sleep<=4) vol*=0.92;                              // nuit courte : on allège le volume
   if(recentLoad>0) vol*=(1-0.25*recentLoad);          // lendemain d'une grosse séance : on rabote le volume
+  if(window.__easyWeek&&window.__easyWeek()) vol*=0.88;   // semaine allégée : on lève le pied partout
   vol=Math.max(0.55,vol);
   const dropSets=(tier==='low'?1:0)+(fatigue>=8?1:0);
   let restMult=1.0;
   if(tier==='low'||fatigue>=7||heat>=7||sleep<=4) restMult=1.35;
   else if(heat>=5) restMult=1.15;                     // chaleur modérée : un peu plus de récup
   if(recentLoad>0) restMult=Math.max(restMult, 1+0.35*recentLoad); // charge récente : repos rallongé
+  if(window.__easyWeek&&window.__easyWeek()) restMult=Math.max(restMult,1.2);   // semaine allégée : plus de récup
   o.level=level;
   const __aff = (o.side==='each' && window.__affectedSide) ? window.__affectedSide() : null;
   if(__aff){ o.startSide = __aff==='g'?'gauche':'droite'; }
@@ -853,6 +907,7 @@ window.__enduranceBlocks = function(opts){
     const maxW = tier==='low'?18 : tier==='high'?32 : 24;                  // garde-fou durée globale
     W=Math.min(W,maxW);
     if(tier==='low') W=Math.round(W*0.7);
+    if(window.__easyWeek&&window.__easyWeek()) W=Math.round(W*0.8);        // semaine allégée : marche raccourcie aussi
     if(evening) W=W-2;                                                     // fin de journée : version raccourcie
     W=Math.max(4,W);
     const blTarget=Math.max(3,Math.min(3+L, Math.round(P*0.8)));           // le bloc grandit avec le niveau, jamais ~au périmètre
@@ -868,6 +923,7 @@ window.__enduranceBlocks = function(opts){
   if(kind==='bike'){
     let T=Math.min(24, 10+2*Math.min(bLvl,window.__exMax));
     if(tier==='low') T=Math.round(T*0.7);
+    if(window.__easyWeek&&window.__easyWeek()) T=Math.round(T*0.8);        // semaine allégée : vélo raccourci aussi
     if(evening) T=T-3;
     T=Math.max(6,T);
     const cycles=Math.max(2,Math.round(T/3));
@@ -932,6 +988,8 @@ window.generateProgram = function(metrics, context){
       if(aaA!=null) sc -= (aaA<=0?44 : aaA===1?26 : aaA===2?12 : aaA<=4?5:0);
       return sc + Math.min(12, ageOf('cardio'));
     }
+    const __ew=window.__easyWeek&&window.__easyWeek();
+    if(__ew){ if(a.gentle) sc+=24; if(a.hard) sc-=40; else if(a.intent==='force') sc-=10; }   // semaine allégée : cap sur le doux
     if(a.gentle){ sc += (tier==='low'?40 : fatigue>=7?34 : heat>=7?22 : -22); }
     else if(a.hard){ sc += (tier==='high'?24 : tier==='moderate'?-8 : -50) + (energy>=8?8:0); } // excentrique = avancé, plus rare
     else if(a.intent==='force'){ sc += (tier==='high'?24 : tier==='moderate'?15 : -28); }       // force bas + proprio : pilier
@@ -968,7 +1026,8 @@ window.generateProgram = function(metrics, context){
   // compléments (biais jambes, puis tout le pool scoré) + dernier recours sans gating (jamais de séance vide)
   ordered=ordered.concat(scoredZone('lower'), scoredPool(mainsAll), __rotate(mainsAll, seed));
 
-  const budget = window.__sessionBudget(metrics, recentLoad);
+  const easyWeek = window.__easyWeek ? window.__easyWeek() : null;
+  const budget = window.__sessionBudget(metrics, recentLoad) * (easyWeek?0.78:1);
   const MINEX=3, MAXEX=7;
   let blocks=[]; let acc=0;
   /* Endurance : blocs dédiés (marche fractionnée dosée sur le périmètre / vélo / intérieur),
@@ -1017,8 +1076,8 @@ window.generateProgram = function(metrics, context){
   /* Plafond de DURÉE — une séance SEP quotidienne doit rester raisonnable (la fatigue est un symptôme).
      On estime la durée réelle (doses mappées) et on retire les exos les moins prioritaires si ça dépasse,
      en protégeant le releveur du pied et la mobilité, sans descendre sous MINEX. */
-  const durCap = tier==='low'?26 : tier==='high'?42 : 34;
-  const OVERHEAD_MIN = 7;   // échauffement + retour au calme
+  const durCap = (tier==='low'?26 : tier==='high'?42 : 34) - (easyWeek?6:0);
+  const OVERHEAD_MIN = arche.gentle ? 10 : 7;   // échauffement + retour au calme (2 cooldowns sur séance douce)
   const blocksMin = bl => Math.round(bl.reduce((s,ex)=>s+__estSec(window.__mapExercise(ex, diff, {tier, metrics, recentLoad})),0)/60);
   let guard=0;
   while(blocks.length>MINEX && (OVERHEAD_MIN+blocksMin(blocks))>durCap && guard++<12){
@@ -1045,6 +1104,7 @@ window.generateProgram = function(metrics, context){
 
   /* Explications "Pourquoi cette séance" */
   const reasons=[];
+  if(easyWeek) reasons.push({t:`Semaine allégée · jour ${window.__easyWeekDay()}/7`, d:'ta forme a baissé plusieurs jours de suite — volume réduit, repos rallongés, aucun palier à valider : on protège ta récupération. Si la baisse persiste au-delà de la semaine, parles-en à ton médecin.'});
   reasons.push({t:'Séance pensée comme un kiné', d:arche.why});
   if(aeroMeta){
     if(aeroMeta.kind==='walk'){
@@ -1075,7 +1135,7 @@ window.generateProgram = function(metrics, context){
   const fl=exercises.filter(e=>e.flagged);
   if(fl.length) reasons.unshift({t:'Difficulté prise en compte', d:`j'allège ${fl.map(e=>e.name.toLowerCase()).join(', ')} suite à ton retour.`});
 
-  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, targets:progTargets, muscles:progMuscles, load:progLoad, effortBudget:+budget.toFixed(1), effortCost:sessionCost, modules:null, moduleEndIdx:null };
+  return { title:arche.label, intensity, duration, readiness, tier, exercises, reasons, sessionId:'ia-'+arche.id, region:zoneA, intent:arche.intent, hasDorsi, targets:progTargets, muscles:progMuscles, load:progLoad, effortBudget:+budget.toFixed(1), effortCost:sessionCost, easyWeek:!!easyWeek, modules:null, moduleEndIdx:null };
 };
 
 /* ═══ SÉANCE SUR MESURE (par objectifs) — échauffement + travail ciblé + retour au calme ═══ */
@@ -1443,15 +1503,16 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const week=window.__weekDoneCount?window.__weekDoneCount():0;
     const goal=4;
     const did=window.__sessHistory?window.__sessHistory().some(e=>e.date===new Date().toISOString().slice(0,10)):false;
-    const msg = streak>=2 ? `${streak} jours d’affilée — ne casse pas la chaîne !`
+    const msg = week>=goal ? 'Semaine réussie — tout le reste est du bonus !'
       : did ? 'Séance du jour faite — bravo !'
+      : week===goal-1 ? 'Plus qu’un jour actif pour réussir ta semaine.'
       : streak===1 ? 'Tu as commencé hier — encore une aujourd’hui ?'
       : 'Reprends en douceur aujourd’hui.';
     return (
       <div style={{display:'flex',alignItems:'center',gap:12,background:'linear-gradient(120deg, rgba(47,191,161,0.12), rgba(242,96,46,0.08))',border:`1px solid ${C.line}`,borderRadius:16,padding:'12px 14px',marginBottom:18}}>
-        <div style={{position:'relative',width:46,height:46,flexShrink:0,borderRadius:'50%',background:'conic-gradient('+C.teal+' '+Math.min(100,streak/7*100)+'%, rgba(47,191,161,0.14) 0)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <div style={{position:'relative',width:46,height:46,flexShrink:0,borderRadius:'50%',background:'conic-gradient('+C.teal+' '+Math.min(100,week/goal*100)+'%, rgba(47,191,161,0.14) 0)',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <div style={{width:37,height:37,borderRadius:'50%',background:C.card,display:'flex',alignItems:'center',justifyContent:'center'}}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={streak>0?C.orange:C.faint} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4 4 5 4 9a4 4 0 0 1-8 0c0-1 .5-2 1-3 .5 2 2 2 2 2 1-2-1-4 1-8z"/></svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={week>0?C.orange:C.faint} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4 4 5 4 9a4 4 0 0 1-8 0c0-1 .5-2 1-3 .5 2 2 2 2 2 1-2-1-4 1-8z"/></svg>
           </div>
         </div>
         <div style={{flex:1,minWidth:0}}>
@@ -1981,7 +2042,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       setRpe(v);
       const outcome = v<=3?'easy' : v>=9?'hard' : 'ok';
       outcomeRef.current[ex.id]= outcome==='ok' ? 'rpe' : outcome;   // marque l'exo comme évalué
-      window.__logSession(ex.id, outcome, ex.area, program.tier);
+      window.__logSession(ex.id, outcome, ex.area, program.easyWeek?'low':program.tier);   // semaine allégée : pas de palier validé
       setToast(v<=3 ? `Effort ${v}/10 — je corse cet exercice la prochaine fois.`
              : v>=9 ? `Effort ${v}/10 — j’allège un peu la prochaine fois.`
              : `Effort ${v}/10 — bonne zone, je garde le cap et fais progresser en douceur.`);
@@ -2047,7 +2108,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       if(ex.weighted){ window.__logStrength(ex.id, ex.name, ex.sets, loadW, loadR); }
       if(!ex.weighted && (ex.phase||'main')==='main' && !loggedRef.current.has(ex.id)){
         loggedRef.current.add(ex.id);
-        if(!outcomeRef.current[ex.id]) window.__logSession(ex.id,'ok',ex.area,program.tier);   // déjà évalué (RPE / facile / signalé) → pas de double log
+        if(!outcomeRef.current[ex.id]) window.__logSession(ex.id,'ok',ex.area,program.easyWeek?'low':program.tier);   // déjà évalué (RPE / facile / signalé) → pas de double log
       }
       setDone(d=>{const n=new Set(d);n.add(exIdx);return n;});
       setSide(firstSide);
@@ -2075,9 +2136,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       const gains=exs.filter(e=>e.prog==='up').length;
       const levelUps=Object.keys(outcomeRef.current).filter(id=>outcomeRef.current[id]==='easy').length;
       const milestones=[];
-      if(streak>=2) milestones.push({icon:'flame', t:`${streak} jours d'affilée`, d: streak>=before&&before>0?'tu prolonges ta série, continue !':'ta série redémarre, bravo.'});
-      if(week>=goal) milestones.push({icon:'target', t:`Objectif semaine atteint`, d:`${week}/${goal} séances cette semaine.`});
-      else milestones.push({icon:'target', t:`${week}/${goal} cette semaine`, d:`plus que ${goal-week} pour ton objectif hebdo.`});
+      const wkStreak=window.__weekStreak?window.__weekStreak():0;
+      if(week>=goal) milestones.push({icon:'target', t:`Semaine réussie ✓`, d:`${week}/${goal} jours actifs — le repos des autres jours fait partie du programme.`});
+      else milestones.push({icon:'target', t:`${week}/${goal} cette semaine`, d:`plus que ${goal-week} jour${goal-week>1?'s':''} actif${goal-week>1?'s':''} pour réussir ta semaine.`});
+      if(wkStreak>=2) milestones.push({icon:'flame', t:`${wkStreak} semaines réussies d'affilée`, d:'la régularité qui compte, c’est celle-là — semaine après semaine.'});
+      else if(streak>=2) milestones.push({icon:'flame', t:`${streak} jours d'affilée`, d:'beau rythme — pense aussi aux jours de repos, ils font partie du plan.'});
       if(gains>0) milestones.push({icon:'trend', t:`${gains} exercice${gains>1?'s':''} en progression`, d:'tu as poussé un cran plus loin.'});
       if(levelUps>0) milestones.push({icon:'star', t:`${levelUps} niveau${levelUps>1?'x':''} gagné${levelUps>1?'s':''}`, d:'« trop facile » → je corse la prochaine fois.'});
       setSummary({streak,week,goal,milestones,grew:streak>before});
@@ -2090,10 +2153,10 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
      return (
       <div style={{display:'flex',flexDirection:'column',minHeight:'100%',alignItems:'center',justifyContent:'center',padding:'36px 28px',textAlign:'center',overflowY:'auto'}} className="hidescroll">
         <div style={{position:'relative',marginBottom:18}}>
-          <div style={{width:96,height:96,borderRadius:'50%',background:'conic-gradient('+C.teal+' '+Math.min(100,s.streak/7*100)+'%, rgba(47,191,161,0.12) 0)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:96,height:96,borderRadius:'50%',background:'conic-gradient('+C.teal+' '+Math.min(100,s.week/s.goal*100)+'%, rgba(47,191,161,0.12) 0)',display:'flex',alignItems:'center',justifyContent:'center'}}>
             <div style={{width:78,height:78,borderRadius:'50%',background:C.card,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:'inset 0 0 0 1px '+C.line}}>
-              <span style={{fontFamily:"'DM Mono',monospace",fontSize:30,fontWeight:600,color:C.ink,lineHeight:1}}>{s.streak}</span>
-              <span style={{fontSize:9.5,color:C.muted,letterSpacing:'0.06em',marginTop:1}}>JOURS</span>
+              <span style={{fontFamily:"'DM Mono',monospace",fontSize:30,fontWeight:600,color:C.ink,lineHeight:1}}>{s.week}/{s.goal}</span>
+              <span style={{fontSize:9.5,color:C.muted,letterSpacing:'0.06em',marginTop:1}}>CETTE SEM.</span>
             </div>
           </div>
           <div style={{position:'absolute',right:-4,bottom:-4,width:32,height:32,borderRadius:'50%',background:C.orange,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 3px 10px rgba(242,96,46,0.4)'}}>
@@ -2960,10 +3023,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const fhFirst=formeHistory[0], fhLast=formeHistory[formeHistory.length-1];
     const pctForme=(formeHistory.length>1&&fhFirst)?Math.round((fhLast-fhFirst)/fhFirst*100):0;
     const goals=window.__longTermGoals();
-    const streak=window.__streak(), record=window.__bestStreak(), weekCount=window.__weekDoneCount();
+    const streak=window.__streak(), weekCount=window.__weekDoneCount();
+    const weekStreak=window.__weekStreak(), record=window.__bestWeekStreak();
     const monthKey=(function(){ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); })();
     const monthCount=[...new Set(window.__sessHistory().filter(e=>e.date.slice(0,7)===monthKey).map(e=>e.date))].length;
-    const isRecord=streak>0&&streak>=record;
+    const isRecord=weekStreak>0&&weekStreak>=record;
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:20,boxShadow:C.sh};
     const emptyCard={...card,padding:'22px 18px',textAlign:'center',color:C.muted,fontSize:13,lineHeight:1.5};
     const TABS=[['reg','Régularité'],['force','Force & objectifs'],['tests','Tests']];
@@ -2992,7 +3056,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <div style={{display:'flex',alignItems:'center',gap:18,marginBottom:20}}>
             <RingChart value={weekCount} max={Math.max(4,weekCount)} size={124}/>
             <div style={{flex:1,display:'flex',flexDirection:'column',gap:12}}>
-              <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.orange,lineHeight:1}}>{streak}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>jours de suite</div></div>
+              <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.orange,lineHeight:1}}>{weekStreak}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>semaine{weekStreak>1?'s':''} réussie{weekStreak>1?'s':''} de suite</div></div>
               <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.teal,lineHeight:1}}>{monthCount}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>séances ce mois</div></div>
             </div>
           </div>
@@ -3000,7 +3064,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           {record>=2 && (
           <div style={{...card,padding:'14px 16px',marginBottom:20,display:'flex',alignItems:'center',gap:13,background:isRecord?'linear-gradient(135deg,#FFE9E0,#FFF4EF)':C.card,border:isRecord?'1px solid rgba(242,96,46,0.3)':`1px solid ${C.line}`}}>
             <div style={{width:42,height:42,borderRadius:12,background:isRecord?'rgba(242,96,46,0.16)':'rgba(224,138,11,0.12)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecord?C.orange:C.amber} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M5 9H3a2 2 0 0 1 0-4h2M19 9h2a2 2 0 0 0 0-4h-2"/></svg></div>
-            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>{isRecord?'Nouveau record de régularité !':'Record de régularité'}</div><div style={{fontSize:12.5,color:C.body,marginTop:1}}>{isRecord?`${streak} jours d'affilée — ton meilleur enchaînement.`:`Ta meilleure série : ${record} jours. Plus que ${record-streak} pour l'égaler !`}</div></div>
+            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>{isRecord?'Nouveau record de régularité !':'Record de régularité'}</div><div style={{fontSize:12.5,color:C.body,marginTop:1}}>{isRecord?`${weekStreak} semaine${weekStreak>1?'s':''} réussie${weekStreak>1?'s':''} d'affilée — ton meilleur enchaînement.`:`Ton record : ${record} semaine${record>1?'s':''} réussie${record>1?'s':''} de suite (≥ 4 jours actifs). Encore ${Math.max(1,record-weekStreak)} pour l'égaler !`}</div></div>
           </div>)}
           {/* Analyse IA — seulement avec assez de check-in réels */}
           {formeHistory.length>=2 && (
@@ -3009,7 +3073,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg>
               <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em'}}>Analyse Élan · IA</span>
             </div>
-            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Sur tes <b style={{color:C.ink}}>{formeHistory.length}</b> derniers check-in, ta forme va de <b style={{color:C.ink}}>{fhFirst} → {fhLast}</b> ({pctForme>0?'+':''}{pctForme}%).{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> Et sur la chaise au mur, tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois.</>:''} {streak>=2?'Garde ce rythme — la régularité, c\'est ce qui fait progresser dans la SEP.':'Continue à enchaîner les séances pour voir la tendance se dessiner.'}</p>
+            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Sur tes <b style={{color:C.ink}}>{formeHistory.length}</b> derniers check-in, ta forme va de <b style={{color:C.ink}}>{fhFirst} → {fhLast}</b> ({pctForme>0?'+':''}{pctForme}%).{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> Et sur la chaise au mur, tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois.</>:''} {weekCount>=3?'Garde ce rythme — la régularité hebdo, c\'est ce qui fait progresser dans la SEP. Les jours de repos en font partie.':'Continue à enchaîner les séances pour voir la tendance se dessiner.'}</p>
           </div>)}
           {formeHistory.length>=2
             ? <div style={{...card,padding:'16px 14px 12px',marginBottom:20}}>
@@ -3745,7 +3809,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
         {/* résumé du mois */}
         <div style={{display:'flex',gap:8,marginBottom:18}}>
-          {[{v:doneCount,l:'ce mois',c:C.tealDk},{v:`${week}/4`,l:'cette sem.',c:week>=4?C.tealDk:C.ink},{v:streak,l:"d'affilée",c:C.orange}].map((s,i)=>(
+          {[{v:doneCount,l:'ce mois',c:C.tealDk},{v:`${week}/4`,l:'cette sem.',c:week>=4?C.tealDk:C.ink},{v:window.__weekStreak(),l:'sem. réussies',c:C.orange}].map((s,i)=>(
             <div key={i} style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,boxShadow:C.sh,padding:'11px 8px',textAlign:'center'}}>
               <div style={{fontFamily:"'DM Mono',monospace",fontSize:21,fontWeight:500,color:s.c,lineHeight:1}}>{s.v}</div>
               <div style={{fontSize:10.5,color:C.muted,marginTop:3,letterSpacing:'0.03em'}}>{s.l}</div>
@@ -4053,7 +4117,9 @@ function reminderMessage() {
   const day=new Date().getDay();
   if(heat>=7) return {t:'La fraîcheur revient',b:'La chaleur retombe le soir — c’est le bon moment pour bouger au frais, sans forcer.'};
   if(daysSince>=3) return {t:'On se retrouve ?',b:`${daysSince} jours sans séance — reprends tout en douceur, juste 10 minutes suffisent.`};
-  if(streak>=3) return {t:`${streak} jours d’affilée 🔥`,b:'Ne casse pas ta belle série — ta séance du soir t’attend.'};
+  const wkDone=(window.__weekDoneCount&&window.__weekDoneCount())||0;
+  if(wkDone===3) return {t:`Plus qu'une pour réussir ta semaine 🎯`,b:'3/4 jours actifs — une séance aujourd’hui et la semaine est dans la poche.'};
+  if(streak>=3) return {t:`Beau rythme 🔥`,b:'Ta régularité paie — et n’oublie pas : les jours de repos font partie du plan.'};
   const pool=[
     {t:'Ta séance t’attend',b:'Un petit pas aujourd’hui — même 10 min comptent.'},
     {t:'Cap sur ce soir',b:'Le mouvement, c’est ton meilleur allié contre la fatigue. On y va ?'},
@@ -4074,6 +4140,37 @@ function BilanReminderBanner({ onOpen }) {
       <div style={{width:38,height:38,borderRadius:11,background:'rgba(47,191,161,0.14)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
       <div style={{flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:C.ink,textTransform:'capitalize'}}>Bilan mensuel de {window.ED.monthLabel}</div><div style={{fontSize:12,color:C.body,marginTop:1}}>Mesure tes progrès du mois — 5 tests, ~8 min.</div></div>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </div>
+  );
+}
+
+/* ─── Semaine allégée : proposition (tendance de forme en baisse) ou état actif ─── */
+function EasyWeekBanner({ onChange }) {
+  const active=window.__easyWeek&&window.__easyWeek();
+  const prop=(!active && window.__easyWeekProposal) ? window.__easyWeekProposal() : null;
+  if(!active && !prop) return null;
+  if(active){
+    return (
+      <div style={{margin:'0 0 14px',display:'flex',alignItems:'center',gap:12,background:'linear-gradient(135deg,#E8F1FA,#F3F8FD)',border:'1px solid rgba(58,127,204,0.3)',borderRadius:16,padding:'12px 15px',boxShadow:C.sh}}>
+        <div style={{width:38,height:38,borderRadius:11,background:'rgba(58,127,204,0.13)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#3A7FCC" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg></div>
+        <div style={{flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:C.ink}}>Semaine allégée · jour {window.__easyWeekDay()}/7</div><div style={{fontSize:12,color:C.body,marginTop:1}}>Volume réduit, repos rallongés — on protège ta récupération.</div></div>
+        <button onClick={()=>{window.__stopEasyWeek();onChange&&onChange();}} style={{background:'none',border:`1px solid ${C.line2}`,borderRadius:10,padding:'7px 11px',fontSize:12,fontWeight:600,color:C.muted,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",flexShrink:0}}>Arrêter</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{margin:'0 0 14px',background:'linear-gradient(135deg,#E8F1FA,#F3F8FD)',border:'1px solid rgba(58,127,204,0.32)',borderRadius:16,padding:'13px 15px',boxShadow:C.sh}}>
+      <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
+        <div style={{width:38,height:38,borderRadius:11,background:'rgba(58,127,204,0.13)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#3A7FCC" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg></div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13.5,fontWeight:600,color:C.ink}}>Ta forme baisse depuis quelques jours</div>
+          <div style={{fontSize:12,color:C.body,marginTop:2,lineHeight:1.45}}>Moyenne récente {prop.recent}/100 contre {prop.base}/100 d'habitude. C'est peut-être une passe difficile — je te propose <b>7 jours allégés</b> : volume réduit, plus de repos, zéro pression. Si ça persiste malgré tout, parles-en à ton médecin.</div>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:9,marginTop:11}}>
+        <button onClick={()=>{window.__easyWeekDismiss();onChange&&onChange();}} style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:11,padding:'10px',fontSize:13,fontWeight:600,color:C.muted,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Non merci</button>
+        <button onClick={()=>{window.__startEasyWeek();onChange&&onChange();}} style={{flex:1,background:'#3A7FCC',border:'none',borderRadius:11,padding:'10px',fontSize:13,fontWeight:600,color:'#fff',cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Activer la semaine allégée</button>
+      </div>
     </div>
   );
 }
@@ -4124,6 +4221,8 @@ function App() {
   const closeReview=()=>{ const c=window.__readCheckin(); if(c&&c.metrics) setMetrics(c.metrics); setReviewCheckin(false); };
   const showReminder=t.dailyReminder&&checkedIn&&!started&&!window.__sessionDoneToday();
   const showBilanReminder=checkedIn&&!started&&window.__bilanReminderDue()&&!bilanDone;
+  const [ewTick,setEwTick]=React.useState(0);
+  const showEasyBanner=checkedIn&&!started&&!!((window.__easyWeek&&window.__easyWeek())||(window.__easyWeekProposal&&window.__easyWeekProposal()));
   /* ── Geste « retour » (Android / navigateur) : ferme l'écran courant au lieu de quitter l'app ──
      L'app est en page unique : sans cette intégration, le retour système sort de l'appli. On garde
      une entrée d'historique « sentinelle » tant qu'il y a quelque chose à fermer, et on intercepte
@@ -4159,7 +4258,7 @@ function App() {
   /* aligne l'intensité « sur mesure » par défaut sur la forme du jour, une fois le check-in fait */
   React.useEffect(()=>{ if(checkedIn) setCustomIntensity(window.__suggestIntensity(metrics)); },[checkedIn]);
   const [gymId,setGymId]=React.useState(null);
-  const baseProgram=React.useMemo(()=>window.generateProgram(metrics,context),[checkedIn,metrics.energy,metrics.fatigue,metrics.heat,metrics.sleep]);
+  const baseProgram=React.useMemo(()=>window.generateProgram(metrics,context),[checkedIn,metrics.energy,metrics.fatigue,metrics.heat,metrics.sleep,ewTick]);
   const program=React.useMemo(()=>{
     if(sessionMode==='custom') return window.generateCustomProgram(customGoals,customIntensity,metrics,context);
     if(sessionMode==='gym'&&gymId) return window.buildGymProgram(gymId,context,metrics);
@@ -4176,7 +4275,7 @@ function App() {
       {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(92px + max(env(safe-area-inset-bottom, 0px), 22px))'}}>
         <div key={tab+String(started)} className="screen-in">
-          {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder)?'24px 24px 0':0}}>{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
+          {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
