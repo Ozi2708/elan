@@ -406,9 +406,9 @@ window.__dorsiDueToday=function(){
   if(thisWeek.length===0) return true;
   const dates=hist.filter(e=>e.dorsi).map(e=>e.date).sort();
   const last=dates[dates.length-1];
-  const gap=last?Math.round((Date.now()-new Date(last).getTime())/86400000):99;
+  const gap=last?window.__daysSince(last):99;   // écart en JOURS calendaires (0 = déjà fait aujourd'hui)
   const isoDow=(new Date().getUTCDay()||7);   // 1=lundi … 7=dimanche
-  return gap>=2 || isoDow>=5;                  // espacé OU forcé en fin de semaine
+  return gap>=2 || (isoDow>=5 && gap>=1);       // espacé OU forcé en fin de semaine — jamais deux fois le même jour
 };
 /* ─── Endurance aérobie (marche / vélo) : garantir 2 séances / semaine ISO, espacées ───
    Même mécanique que le releveur du pied : 1re dès que possible, 2e espacée d'au moins
@@ -423,9 +423,9 @@ window.__aeroDueToday=function(){
   if(thisWeek.length===0) return true;
   const dates=hist.filter(e=>e.region==='cardio').map(e=>e.date).sort();
   const last=dates[dates.length-1];
-  const gap=last?Math.round((Date.now()-new Date(last).getTime())/86400000):99;
+  const gap=last?window.__daysSince(last):99;    // écart en JOURS calendaires (0 = déjà fait aujourd'hui)
   const isoDow=(new Date().getUTCDay()||7);
-  return gap>=2 || isoDow>=5;
+  return gap>=2 || (isoDow>=5 && gap>=1);        // jamais deux fois le même jour
 };
 window.__bestStreak=function(){
   const days=[...new Set(window.__sessHistory().map(e=>e.date))].sort();
@@ -904,9 +904,10 @@ window.__enduranceBlocks = function(opts){
          on n'atteint JAMAIS le mur en continu pendant la séance — le périmètre se re-mesure
          (test 6 min / réglage Profil), il ne se force pas. */
     let W=Math.round(P*(0.6+0.13*L));
-    const maxW = tier==='low'?18 : tier==='high'?32 : 24;                  // garde-fou durée globale
+    if(tier==='low') W=Math.round(W*0.7);                                  // autorégulation du jour autour du palier de progression
+    else if(tier==='high') W=Math.round(W*1.12);                           // bon jour : un peu plus de volume
+    const maxW = tier==='low'?18 : tier==='high'?32 : 24;                  // garde-fou durée globale (jamais dépassé)
     W=Math.min(W,maxW);
-    if(tier==='low') W=Math.round(W*0.7);
     if(window.__easyWeek&&window.__easyWeek()) W=Math.round(W*0.8);        // semaine allégée : marche raccourcie aussi
     if(evening) W=W-2;                                                     // fin de journée : version raccourcie
     W=Math.max(4,W);
@@ -1096,7 +1097,10 @@ window.generateProgram = function(metrics, context){
 
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
   const duration = __sessionDuration(exercises);   // doses réelles (après adaptation), pas les valeurs de base
-  const intensity = arche.aero ? 'Endurance' : (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
+  /* Libellé d'intensité : aligné sur la FORME affichée (readiness → tier) et l'archétype.
+     La fatigue est déjà intégrée dans la readiness : on ne la recompte pas ici, sinon un bon
+     score de forme pouvait afficher « Douce » de façon incohérente. */
+  const intensity = arche.aero ? 'Endurance' : arche.gentle ? 'Douce' : arche.hard ? 'Soutenue' : (tier==='low' ? 'Douce' : tier==='high' ? 'Soutenue' : 'Modérée');
   const __mains=exercises.filter(e=>e.phase==='main');
   const progTargets=[...new Set(__mains.flatMap(e=>e.targets||[]))];
   const progMuscles=[...new Set(__mains.flatMap(e=>e.muscleTags||[]))];
@@ -1966,6 +1970,96 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
   window.ES.ProgramScreen=ProgramScreen;
+
+  /* ─── Séance du jour FAITE : félicitations + récap des bienfaits, et surtout PLUS de séance
+     Élan possible aujourd'hui (une séance quotidienne, la récupération fait partie du programme). ─── */
+  const __DONE_PHRASES=[
+    'Séance bouclée. Bravo — tu as tenu ta promesse du jour.',
+    'C’est fait ! Chaque séance est une brique de plus pour ton autonomie.',
+    'Bien joué. Ton corps te dira merci demain.',
+    'Séance validée 👏 La régularité, c’est toi qui l’écris, jour après jour.',
+    'Terminé, et bien terminé. Tu viens de reprendre un peu la main sur la SEP.',
+    'Objectif du jour accompli. Sois fier·e du chemin parcouru.',
+    'Voilà une séance de plus au compteur. Le meilleur traitement, c’est le mouvement régulier.',
+  ];
+  const __BENEFITS={
+    'force-bas':'renforcé tes jambes — la base d’une marche plus sûre et plus longue',
+    'force-tronc':'gainé ton tronc — un centre solide qui stabilise chaque pas',
+    'force-haut':'travaillé le haut du corps — utile pour les transferts et l’autonomie',
+    'equilibre':'entraîné ton équilibre — moins de risque de chute au quotidien',
+    'proprioception':'affûté ta proprioception — ton cerveau sait mieux où sont tes pieds',
+    'endurance':'poussé ton endurance — le levier le plus prouvé contre la fatigue SEP',
+    'pied-tombant':'sollicité ton releveur du pied — moins d’accrochage à la marche',
+    'mobilite':'entretenu ta mobilité — moins de raideur et de spasticité',
+    'coordination':'travaillé ta coordination — des gestes plus fluides et sûrs',
+  };
+  const __AREA_TO_TARGET={lower:'force-bas',upper:'force-haut',core:'force-tronc',balance:'equilibre',proprioception:'proprioception',cardio:'endurance',stretching:'mobilite',dorsi:'pied-tombant'};
+  function DonePanel({ onProgress }){
+    const hist=window.__sessHistory?window.__sessHistory():[];
+    const today=window.__today();
+    const done=hist.filter(e=>e.date===today);
+    const rec=done[done.length-1]||{};
+    const week=window.__weekDoneCount?window.__weekDoneCount():done.length;
+    const goal=4;
+    const dnum=parseInt(today.replace(/-/g,''),10)||0;
+    const phrase=__DONE_PHRASES[dnum%__DONE_PHRASES.length];
+    // bienfaits : d'abord les axes travaillés (targets), sinon déduits des zones
+    let keys=[...new Set(rec.targets||[])].filter(k=>__BENEFITS[k]);
+    if(!keys.length) keys=[...new Set((rec.areas||[]).map(a=>__AREA_TO_TARGET[a]).filter(Boolean))];
+    if(rec.dorsi && !keys.includes('pied-tombant')) keys.push('pied-tombant');
+    const benefits=keys.slice(0,3).map(k=>__BENEFITS[k]);
+    const totalDone=hist.length;
+    return (
+      <div style={{minHeight:'100%',padding:'24px 24px 32px'}}>
+        <div style={{display:'flex',justifyContent:'flex-end',marginBottom:2}}><BrandMark/></div>
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',marginBottom:22}}>
+          <div style={{position:'relative',marginBottom:16}}>
+            <div style={{width:92,height:92,borderRadius:'50%',background:'conic-gradient('+C.teal+' '+Math.min(100,week/goal*100)+'%, rgba(47,191,161,0.12) 0)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div style={{width:74,height:74,borderRadius:'50%',background:C.card,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:'inset 0 0 0 1px '+C.line}}>
+                <span style={{fontFamily:"'DM Mono',monospace",fontSize:27,fontWeight:600,color:C.ink,lineHeight:1}}>{week}/{goal}</span>
+                <span style={{fontSize:9,color:C.muted,letterSpacing:'0.06em',marginTop:2}}>CETTE SEM.</span>
+              </div>
+            </div>
+            <div style={{position:'absolute',right:-3,bottom:-3,width:30,height:30,borderRadius:'50%',background:C.teal,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 3px 10px rgba(47,191,161,0.4)'}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+          </div>
+          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:'0 0 6px'}}>Séance du jour faite</p>
+          <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,letterSpacing:'-0.01em',lineHeight:1.25,marginBottom:8}}>{phrase}</h2>
+          <p style={{fontSize:13,color:C.muted,margin:0,lineHeight:1.5}}>
+            {rec.title?rec.title+' · ':''}{rec.duration?rec.duration+' min':''}{rec.duration?' enregistrées.':' enregistrée.'}
+          </p>
+        </div>
+        {benefits.length>0 && (
+          <div style={{background:C.tint,border:'1px solid rgba(47,191,161,0.22)',borderRadius:18,padding:'15px 16px',marginBottom:16}}>
+            <p style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em',margin:'0 0 11px'}}>Ce que tu viens de gagner</p>
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {benefits.map((b,i)=>(
+                <div key={i} style={{display:'flex',gap:9,alignItems:'flex-start'}}>
+                  <span style={{marginTop:6,width:5,height:5,borderRadius:'50%',background:C.teal,flexShrink:0}}/>
+                  <span style={{fontSize:13,lineHeight:1.45,color:C.body}}>Tu as {b}.</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:18,padding:'15px 16px',marginBottom:16,boxShadow:C.sh}}>
+          <p style={{fontSize:13,lineHeight:1.55,color:C.body,margin:0}}>
+            {week>=goal
+              ? <>Semaine réussie : <b style={{color:C.ink}}>{week}/{goal} jours actifs</b>. Tout le reste est du bonus — profite de ta journée.</>
+              : <>Tu en es à <b style={{color:C.ink}}>{week}/{goal} jours actifs</b> cette semaine. Encore {goal-week} pour réussir ta semaine.</>}
+            {' '}D’ici demain, <b style={{color:C.ink}}>le repos fait partie du programme</b> : c’est lui qui transforme l’effort en progrès.
+          </p>
+        </div>
+        <button onClick={onProgress} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,width:'100%',background:'none',border:`1px solid ${C.line}`,borderRadius:16,padding:'13px 16px',cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:C.tealDk}}>
+          Voir mes progrès
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <p style={{fontSize:11.5,color:C.faint,textAlign:'center',marginTop:18,lineHeight:1.5}}>Reviens demain pour ta prochaine séance. {totalDone} séance{totalDone>1?'s':''} au total — chacune compte.</p>
+      </div>
+    );
+  }
+  window.ES.DonePanel=DonePanel;
 })();
 /* components block 4 */
 (function(){
@@ -4018,7 +4112,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 })();
 /* App block (TweaksPanel retiré ci-dessous via edits) */
 const { BottomNav, Btn, LogoMark, C } = window.EC;
-const { CheckIn, CheckInHybride, ProgramScreen, FocusScreen, ProgressScreen, BilanMensuel, BilanInitial, CalendarScreen, StretchingScreen } = window.ES;
+const { CheckIn, CheckInHybride, ProgramScreen, DonePanel, FocusScreen, ProgressScreen, BilanMensuel, BilanInitial, CalendarScreen, StretchingScreen } = window.ES;
 /* TweaksPanel retiré (outil Claude Design) — remplacé par un état local simple */
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showBranding": true,
@@ -4275,7 +4369,7 @@ function App() {
       {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(92px + max(env(safe-area-inset-bottom, 0px), 22px))'}}>
         <div key={tab+String(started)} className="screen-in">
-          {tab==='today'      && (started ? null : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
+          {tab==='today'      && (started ? null : (checkedIn&&window.__sessionDoneToday&&window.__sessionDoneToday()) ? <DonePanel onProgress={()=>setTab('progress')}/> : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
