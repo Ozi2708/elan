@@ -30,6 +30,7 @@ window.ED_TAGS = {
   'xecc-4':{ region:'lower', targets:['force-bas'],              muscles:['quadriceps'],                       pattern:'squat',    difficulty:3, load:'moyen',  position:'debout-appui', side:'bilateral',          flags:[] }, // chaise contre mur (était core)
 
   /* ── Bas du corps – renforcement avancé (nouveaux, d3-d5) ── */
+  'xfunc-1':{ region:'lower', targets:['force-bas','equilibre','endurance'],  muscles:['quadriceps','fessiers'],   pattern:'marche',   difficulty:2, load:'moyen',  position:'debout-libre', side:'bilateral',         flags:['fallRisk'] }, // lever + 10 pas (TUG fonctionnel)
   'xlb-1': { region:'lower', targets:['force-bas'],                          muscles:['quadriceps','fessiers'],   pattern:'squat',    difficulty:3, load:'moyen',  position:'debout-libre', side:'bilateral',         flags:[] }, // squat poids du corps
   'xlb-2': { region:'lower', targets:['force-bas','equilibre'],              muscles:['quadriceps','fessiers'],   pattern:'fente',    difficulty:3, load:'moyen',  position:'debout-libre', side:'unilateral-chaque', flags:['fallRisk'] }, // fente avant
   'xlb-3': { region:'lower', targets:['force-bas','equilibre'],              muscles:['quadriceps','fessiers'],   pattern:'fente',    difficulty:4, load:'moyen',  position:'debout-libre', side:'unilateral-chaque', flags:['fallRisk'] }, // split squat

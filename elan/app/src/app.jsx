@@ -236,6 +236,10 @@ window.__readSettings=function(){ try{ return JSON.parse((window.localStorage&&l
 window.__saveSettings=function(patch){ const s=Object.assign(window.__readSettings(),patch||{}); try{ if(window.localStorage) localStorage.setItem('elan_settings',JSON.stringify(s)); }catch(e){} return s; };
 window.__profileName=function(){ const n=window.__readSettings().name; return (n&&String(n).trim())||'Val'; };
 window.__affectedSide=function(){ const s=window.__readSettings().affectedSide; return (s==='g'||s==='d')?s:null; }; // 'g' gauche | 'd' droite | null
+/* Périmètre de marche (min) : réglé par l'utilisateur, sinon déduit du niveau cardio (test 6 min).
+   C'est la référence de dose des séances marche — on programme EN-DESSOUS, jamais au-delà. */
+window.__walkPerimeter=function(){ const p=window.__readSettings().walkPerimeter; if(p!=null&&p>0) return Math.max(4,Math.min(60,Math.round(p)));
+  const lvl=window.__hasBaseline?window.__baselineLevel('cardio'):1; return [8,10,12,15,20,25,30][Math.max(0,Math.min(6,lvl))]||15; };
 /* symptômes/objectifs effectifs : la surcharge des réglages prime sur le bilan initial (édition libre après coup) */
 window.__profileSymptoms=function(){ const st=window.__readSettings(); if(Array.isArray(st.symptoms)) return st.symptoms; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.symptoms)||[]; };
 window.__profileGoals=function(){ const st=window.__readSettings(); if(Array.isArray(st.goals)) return st.goals; const b=window.__readBaseline(); return (b&&b.profile&&b.profile.goals)||[]; };
@@ -354,6 +358,23 @@ window.__dorsiDueToday=function(){
   const isoDow=(new Date().getUTCDay()||7);   // 1=lundi … 7=dimanche
   return gap>=2 || isoDow>=5;                  // espacé OU forcé en fin de semaine
 };
+/* ─── Endurance aérobie (marche / vélo) : garantir 2 séances / semaine ISO, espacées ───
+   Même mécanique que le releveur du pied : 1re dès que possible, 2e espacée d'au moins
+   2 jours mais forcée en fin de semaine. La marche étant un VRAI effort de jambes,
+   l'espacement avec la force est géré par la récupération musculaire + le malus d'archétype. */
+window.__AERO_PER_WEEK=2;
+window.__aeroWeekCount=function(){ const wk=window.__isoWeekKey(); return window.__sessHistory().filter(e=>e.region==='cardio' && window.__isoWeekKey(e.date)===wk).length; };
+window.__aeroDueToday=function(){
+  const wk=window.__isoWeekKey(); const hist=window.__sessHistory();
+  const thisWeek=hist.filter(e=>e.region==='cardio' && window.__isoWeekKey(e.date)===wk);
+  if(thisWeek.length>=window.__AERO_PER_WEEK) return false;
+  if(thisWeek.length===0) return true;
+  const dates=hist.filter(e=>e.region==='cardio').map(e=>e.date).sort();
+  const last=dates[dates.length-1];
+  const gap=last?Math.round((Date.now()-new Date(last).getTime())/86400000):99;
+  const isoDow=(new Date().getUTCDay()||7);
+  return gap>=2 || isoDow>=5;
+};
 window.__bestStreak=function(){
   const days=[...new Set(window.__sessHistory().map(e=>e.date))].sort();
   if(!days.length) return 0;
@@ -368,6 +389,9 @@ window.__today=function(){ return new Date().toISOString().slice(0,10); };
 window.__readCheckin=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_checkin'))||'null'); }catch(e){ return null; } };
 window.__saveCheckin=function(metrics){ const rec={date:window.__today(),metrics:metrics||{}}; try{ if(window.localStorage) localStorage.setItem('elan_checkin',JSON.stringify(rec)); }catch(e){} try{ window.__pushForme(window.__readiness(metrics).readiness); }catch(e){} return rec; };
 window.__checkedInToday=function(){ const c=window.__readCheckin(); return !!(c&&c.date===window.__today()); };
+/* Météo du jour (issue du check-in Open-Meteo) : pluie/neige → la marche extérieure bascule en intérieur */
+window.__saveWeatherToday=function(w){ try{ if(window.localStorage) localStorage.setItem('elan_weather',JSON.stringify(Object.assign({date:window.__today()},w||{}))); }catch(e){} };
+window.__weatherToday=function(){ try{ const w=JSON.parse((window.localStorage&&localStorage.getItem('elan_weather'))||'null'); return (w&&w.date===window.__today())?w:null; }catch(e){ return null; } };
 window.__sessionDoneToday=function(){ return window.__sessHistory().some(e=>e.date===window.__today()); };
 
 /* ─── Reprise de séance : faire sa séance en plusieurs fois dans la journée ─── */
@@ -635,8 +659,9 @@ window.__mapExercise = function(ex, diff, ctx){
     o.prog=flagged?'down':(tv>bv?'up':tv<bv?'down':'=');
     o.levelNote=level>0?('Niveau '+level+(st.note?' · '+st.note:'')):'';
   } else {
-    const st=__stepAero(level, ex.min||10);
-    const min=Math.max(5,Math.min(35, Math.round(st.min*vol)));
+    /* fixedDose (blocs marche/vélo) : la dose est calibrée en amont sur le périmètre + niveau — on ne ré-applique ni l'échelle ni le volume du jour */
+    const st = ex.fixedDose ? {min:ex.min||2,note:'',mod:''} : __stepAero(level, ex.min||10);
+    const min = ex.fixedDose ? Math.max(2, ex.min||2) : Math.max(5,Math.min(35, Math.round(st.min*vol)));
     o.min=min; o.sets=1; o.workSec=min*60; o.duration=`${min} min`; o.mod=st.mod||'';
     o.doseText=`${min} min`+(st.mod?` · ${st.mod}`:'');
     o.prog=flagged?'down':(min>(ex.min||10)?'up':min<(ex.min||10)?'down':'=');
@@ -656,7 +681,7 @@ function __estSec(e){
   let workPerSet;
   if(e.sec) workPerSet=e.sec;
   else if(e.reps) workPerSet=(e.reps||10)*3;
-  else if(e.min) return (e.min||0)*60;                 // cardio/échauffement : durée directe
+  else if(e.min) return (e.min||0)*60 + (e.restSec!=null?e.restSec:(e.rest||0));   // cardio : durée + pause (assise) éventuelle
   else workPerSet=(e.workSec||0);
   const perSet = (e.side==='each') ? (2*workPerSet + 7 + rest) : (workPerSet + rest);
   return sets*perSet;
@@ -691,6 +716,8 @@ const __ARCHES=[
    why:'haut du corps et gainage — on laisse les jambes récupérer tout en gardant le tronc solide.'},
   {id:'recup',label:'Récupération & mobilité',zones:['lower','stretching'],order:'block',intent:'mobilite',leg:true,gentle:true,
    why:'journée plus fatiguée : on entretient en douceur (mobilité des jambes, étirements) sans puiser dans tes réserves.'},
+  {id:'endurance',label:'Endurance — périmètre de marche',zones:['cardio','stretching'],order:'block',intent:'cardio',leg:true,aero:true,
+   why:'endurance aérobie fractionnée — le levier le plus prouvé contre la fatigue SEP, et le chemin direct pour étendre ton périmètre de marche.'},
 ];
 /* ═══ Phase 2 — Profil, socle (planchers), récupération musculaire & scoring ═══ */
 window.__daysSince = function(d){ if(!d) return 999; const a=new Date(d); if(isNaN(a)) return 999; const n=new Date();
@@ -705,7 +732,7 @@ window.__userPriorities = function(){ const set=new Set();
   return set; };
 
 /* Planchers hebdo (nb de séances touchant l'axe) — garantissent l'amélioration globale */
-window.__PLANCHERS = { 'force-bas':2, 'equilibre':2, 'proprioception':2, 'pied-tombant':2, 'force-tronc':1, 'force-haut':1, 'endurance':1, 'mobilite':1, 'coordination':1 };
+window.__PLANCHERS = { 'force-bas':2, 'equilibre':2, 'proprioception':2, 'pied-tombant':2, 'force-tronc':1, 'force-haut':1, 'endurance':2, 'mobilite':1, 'coordination':1 };
 window.__axisDeficit = function(){ const hist=window.__sessHistory().filter(e=>window.__daysSince(e.date)<7);
   const count={}; hist.forEach(h=>{ new Set(h.targets||[]).forEach(a=>count[a]=(count[a]||0)+1); });
   const def={}; Object.keys(window.__PLANCHERS).forEach(a=>{ def[a]=Math.max(0,(window.__PLANCHERS[a])-(count[a]||0)); });
@@ -779,6 +806,72 @@ window.__scoreExercise = function(ex, ctx){
   return s;
 };
 
+/* ─── Blocs endurance (marche fractionnée / vélo / intérieur) ───
+   La marche est dosée sur le PÉRIMÈTRE réel de l'utilisateur : on démarre à ~60 % du périmètre
+   en marche cumulée, découpée en blocs avec vraies pauses assises (fractionné kiné SEP), et on
+   étend d'1 min par niveau gagné — volume avant intensité, jamais au-delà du périmètre.
+   Variante : marche prioritaire si l'objectif « Marcher plus longtemps » est coché ; vélo quand
+   les conditions tuent la marche (pluie, chaleur, soir, forme basse) ; intérieur sans vélo. */
+window.__enduranceBlocks = function(opts){
+  opts=opts||{};
+  const { tier='moderate', seed=0, hasVelo=false, rainy=false, hot=false, evening=false, goalWalk=false } = opts;
+  const mkWalk = (min,i,n,pause)=>({ id:'walk-block', name:`Marche — bloc ${i+1}/${n}`, phase:'main', region:'cardio',
+    unit:'min', min, workSec:min*60, rest:pause, fixedDose:true, doseText:`${min} min de marche`,
+    targets:['endurance'], muscleTags:['mollets','quadriceps','fessiers'], load:'moyen', pattern:'marche', difficulty:2, side:'both',
+    position:'Dehors ou dans un couloir, en boucles courtes près d’un point d’assise.',
+    muscles:'Jambes, souffle',
+    desc:'Marche à allure confortable : regard loin devant, pas réguliers, bras qui balancent. Sur une partie du bloc, essaie des pas un peu plus longs et une attaque par le talon.',
+    conseil:'Règle d’or : tu dois pouvoir parler en marchant (pas chanter). Fais des boucles courtes ou des allers-retours de 90 s près de chez toi — jamais un demi-tour lointain. À la pause, assieds-toi vraiment.',
+    alternative:'Marche d’intérieur dans un couloir, ou marche sur place avec appui.' });
+  const mkBike = (min,soft,i)=>({ id:soft?'bike-easy':'bike-up', name:soft?`Pédalage tranquille ${i}`:`Pédalage un peu plus soutenu ${i}`,
+    phase:'main', region:'cardio', unit:'min', min, workSec:min*60, rest:0, fixedDose:true, doseText:`${min} min`,
+    targets:['endurance'], muscleTags:['quadriceps','mollets'], load:'moyen', pattern:'marche', difficulty:soft?1:2, side:'both',
+    position:'Assis sur le vélo, dos droit, mains posées sans crispation.', muscles:'Jambes, souffle',
+    desc:soft?'Résistance faible, cadence confortable, respiration calme.':'Résistance ou cadence un peu plus élevée — tu dois encore pouvoir parler.',
+    conseil:'Le vélo épargne l’équilibre et n’a pas de point de demi-tour : parfait quand la marche n’est pas idéale.', alternative:'' });
+  /* niveau acquis (staircase RPE / « 2 réussites → +1 ») ancré sur un id par variante */
+  const wLvl = window.__exLevel ? window.__exLevel('walk-block','cardio') : 0;
+  const bLvl = window.__exLevel ? window.__exLevel('bike-up','cardio') : 0;
+  /* choix de la variante */
+  let kind, whySwitch='';
+  if(rainy){ kind = hasVelo?'bike':'indoor'; whySwitch='pluie annoncée — on garde l’endurance, mais à l’intérieur.'; }
+  else if(hot){ kind = hasVelo?'bike':'indoor'; whySwitch='chaleur — on garde l’endurance au frais, à l’intérieur.'; }
+  else if(tier==='low' && hasVelo){ kind='bike'; whySwitch='forme basse — le vélo épargne l’équilibre aujourd’hui.'; }
+  else if(goalWalk){ if(hasVelo && seed%3===2){ kind='bike'; whySwitch='un peu de vélo pour varier — la marche reste ta priorité.'; } else kind='walk'; }
+  else kind = hasVelo ? (seed%2? 'bike':'walk') : 'walk';
+  if(kind==='walk'){
+    const P=window.__walkPerimeter();
+    let W=Math.min(Math.round(P*0.6)+Math.min(wLvl,window.__exMax), P);   // marche cumulée, plafonnée au périmètre
+    if(tier==='low') W=Math.round(W*0.7);
+    if(evening) W=W-2;                                                     // fin de journée : version raccourcie
+    W=Math.max(4,W);
+    const n = W>=14?4 : W>=8?3 : 2;
+    /* distribution EXACTE des minutes (jamais au-delà du périmètre) : les premiers blocs prennent le reste */
+    const base=Math.max(2,Math.floor(W/n)), rem=Math.max(0,W-base*n);
+    const pause=Math.max(60, 150-15*wLvl);                                 // pauses assises qui raccourcissent avec le niveau
+    const blocks=[]; for(let i=0;i<n;i++) blocks.push(mkWalk(base+(i<rem?1:0),i,n,i<n-1?pause:0));
+    const warm={ id:'walk-warm', name:'Mise en route', phase:'warmup', region:'cardio', unit:'min', min:2, workSec:120, rest:0, fixedDose:true,
+      doseText:'2 min', desc:'2 min de marche très tranquille pour lancer la machine — posture haute, épaules relâchées.', muscles:'Jambes', position:'Départ de chez toi ou du couloir.', conseil:'', alternative:'' };
+    return { kind, blocks, warm, whySwitch, walkTotal:blocks.reduce((s,b)=>s+b.min,0), perimeter:P, level:wLvl };
+  }
+  if(kind==='bike'){
+    let T=Math.min(24, 10+2*Math.min(bLvl,window.__exMax));
+    if(tier==='low') T=Math.round(T*0.7);
+    if(evening) T=T-3;
+    T=Math.max(6,T);
+    const cycles=Math.max(2,Math.round(T/3));
+    const blocks=[]; for(let i=1;i<=cycles;i++){ blocks.push(mkBike(2,true,i)); blocks.push(mkBike(1,false,i)); }
+    const warm={ id:'bike-warm', name:'Pédalage très doux', phase:'warmup', region:'cardio', unit:'min', min:3, workSec:180, rest:0, fixedDose:true,
+      doseText:'3 min', desc:'Résistance minimale, cadence libre — le temps que les jambes chauffent.', muscles:'Jambes', position:'Assis sur le vélo.', conseil:'', alternative:'' };
+    return { kind, blocks, warm, whySwitch, level:bLvl };
+  }
+  /* indoor : la séance cardio sans matériel existante (montées de genoux, pas chassés) */
+  const s=(window.ED_SESSIONS||[]).find(x=>x.id==='xCardBw');
+  const mains=s?s.exercises.filter(e=>(e.phase||'main')==='main'):[];
+  const warm=s?s.exercises.find(e=>e.phase==='warmup'):null;
+  return { kind:'indoor', blocks:mains, warm, whySwitch, level:0 };
+};
+
 window.generateProgram = function(metrics, context){
   const { energy=5, fatigue=4, heat=4, sleep=6 } = metrics || {};
   const { readiness, tier } = window.__readiness(metrics);
@@ -794,6 +887,7 @@ window.generateProgram = function(metrics, context){
   const usable = (window.ED_SESSIONS||[]).filter(s=>s.equip.every(e=>avail.includes(e)));
   const seen=new Set(); const mainsAll=[]; const warmups=[]; const cooldowns=[];
   usable.forEach(s=>s.exercises.forEach(ex=>{
+    if(ex.region==='cardio') return;                    // le cardio ne vit que via l'archétype endurance (blocs dédiés)
     if(ex.phase==='warmup'){ warmups.push(ex); return; }
     if(ex.phase==='cooldown'){ cooldowns.push(ex); return; }
     if(seen.has(ex.name)) return; seen.add(ex.name); mainsAll.push(ex);
@@ -814,9 +908,19 @@ window.generateProgram = function(metrics, context){
 
   /* ── SCORE des archétypes (raisonnement kiné, biais membres inférieurs) ── */
   function scoreArche(a){
-    if(!zoneHas(a.zones[0])) return -1e9;
+    if(!a.aero && !zoneHas(a.zones[0])) return -1e9;   // l'endurance fournit ses propres blocs (marche/vélo)
     let sc=0;
     if(a.leg) sc+=16;                                   // SEP → priorité aux jambes
+    if(a.aero){
+      /* La marche/vélo est un VRAI effort de jambes (pas de la récup) : jamais collée à un jour force. */
+      sc += (window.__aeroDueToday&&window.__aeroDueToday()) ? 34 : -18;   // cadence 2×/sem, espacée
+      if(legHardRecent) sc -= 30;                                          // jambes travaillées hier → pas de marche
+      if((window.__blockedAxesToday()||[]).indexOf('force-bas')>=0) sc -= 26; // fenêtre salle jambes (veille/jour/lendemain)
+      if(tier==='low') sc -= 8;                                            // possible mais version courte ; « récup » reste préférée
+      const aaA=archeAge['ia-'+a.id];                                      // anti-répétition : pas deux marches d'affilée
+      if(aaA!=null) sc -= (aaA<=0?44 : aaA===1?26 : aaA===2?12 : aaA<=4?5:0);
+      return sc + Math.min(12, ageOf('cardio'));
+    }
     if(a.gentle){ sc += (tier==='low'?40 : fatigue>=7?34 : heat>=7?22 : -22); }
     else if(a.hard){ sc += (tier==='high'?24 : tier==='moderate'?-8 : -50) + (energy>=8?8:0); } // excentrique = avancé, plus rare
     else if(a.intent==='force'){ sc += (tier==='high'?24 : tier==='moderate'?15 : -28); }       // force bas + proprio : pilier
@@ -856,11 +960,23 @@ window.generateProgram = function(metrics, context){
   const budget = window.__sessionBudget(metrics, recentLoad);
   const MINEX=3, MAXEX=7;
   let blocks=[]; let acc=0;
-  for(const ex of ordered){
-    if(used.has(ex.name)) continue;
-    if(blocks.length>=MAXEX) break;
-    if(blocks.length>=MINEX && acc>=budget) break;     // budget atteint (min 3 garanti)
-    blocks.push(ex); used.add(ex.name); if(ex.pattern) usedPatterns.add(ex.pattern); acc+=window.__exCost(ex);
+  /* Endurance : blocs dédiés (marche fractionnée dosée sur le périmètre / vélo / intérieur),
+     pas de composition par budget — la dose est calibrée en amont. */
+  let aeroMeta=null;
+  if(arche.aero){
+    const wx=window.__weatherToday?window.__weatherToday():null;
+    aeroMeta=window.__enduranceBlocks({ tier, seed, hasVelo:avail.includes('velo'),
+      rainy:!!(wx&&wx.rainy), hot:heat>=6, evening:new Date().getHours()>=17,
+      goalWalk:window.__profileGoals().includes('Marcher plus longtemps') });
+    blocks=aeroMeta.blocks.slice(); blocks.forEach(b=>{ used.add(b.name); });
+    acc=blocks.reduce((s,e)=>s+window.__exCost(e),0);
+  } else {
+    for(const ex of ordered){
+      if(used.has(ex.name)) continue;
+      if(blocks.length>=MAXEX) break;
+      if(blocks.length>=MINEX && acc>=budget) break;   // budget atteint (min 3 garanti)
+      blocks.push(ex); used.add(ex.name); if(ex.pattern) usedPatterns.add(ex.pattern); acc+=window.__exCost(ex);
+    }
   }
   let sessionCost=+acc.toFixed(2);
 
@@ -896,7 +1012,7 @@ window.generateProgram = function(metrics, context){
   let guard=0;
   while(blocks.length>MINEX && (OVERHEAD_MIN+blocksMin(blocks))>durCap && guard++<12){
     let idx=-1;
-    for(let i=blocks.length-1;i>=0;i--){ const id=blocks[i].id||''; if(!/^dorsi/.test(id) && !(blocks[i].targets||[]).includes('mobilite')){ idx=i; break; } }
+    for(let i=blocks.length-1;i>=0;i--){ const id=blocks[i].id||''; if(!/^dorsi/.test(id) && !(blocks[i].targets||[]).includes('mobilite') && !(arche.aero && blocks[i].region==='cardio')){ idx=i; break; } }
     if(idx<0) break;
     const rm=blocks.splice(idx,1)[0]; if(rm&&rm.name) used.delete(rm.name);
   }
@@ -904,13 +1020,13 @@ window.generateProgram = function(metrics, context){
   const hasDorsi = blocks.some(e=>/^dorsi/.test(e.id||''));
 
   /* Échauffement (zone dominante) + retour au calme (1, ou 2 si récup/mobilité) */
-  const warm = __rotate(warmups.filter(w=>w.region===zoneA), seed)[0] || __rotate(warmups, seed)[0];
+  const warm = (aeroMeta&&aeroMeta.warm) ? aeroMeta.warm : (__rotate(warmups.filter(w=>w.region===zoneA), seed)[0] || __rotate(warmups, seed)[0]);
   const cools = __rotate(cooldowns, seed+3);
   const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
   const duration = __sessionDuration(exercises);   // doses réelles (après adaptation), pas les valeurs de base
-  const intensity = (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
+  const intensity = arche.aero ? 'Endurance' : (arche.gentle||tier==='low'||fatigue>=7) ? 'Douce' : ((arche.hard||tier==='high') ? 'Soutenue' : 'Modérée');
   const __mains=exercises.filter(e=>e.phase==='main');
   const progTargets=[...new Set(__mains.flatMap(e=>e.targets||[]))];
   const progMuscles=[...new Set(__mains.flatMap(e=>e.muscleTags||[]))];
@@ -919,6 +1035,13 @@ window.generateProgram = function(metrics, context){
   /* Explications "Pourquoi cette séance" */
   const reasons=[];
   reasons.push({t:'Séance pensée comme un kiné', d:arche.why});
+  if(aeroMeta){
+    if(aeroMeta.kind==='walk') reasons.push({t:`Dosée sur TON périmètre (${aeroMeta.perimeter} min)`, d:`${aeroMeta.walkTotal} min de marche cumulée, fractionnée avec de vraies pauses assises — tu finis avec de la réserve, c'est voulu. On étend d'1 min par palier réussi, jamais au-delà de ton périmètre.`});
+    reasons.push({t:'Allure cible : le test de la parole', d:'tu dois pouvoir parler en marchant/pédalant, mais plus chanter. Si tu ne peux plus parler, ralentis.'});
+    if(aeroMeta.whySwitch) reasons.push({t:'Adaptation du jour', d:aeroMeta.whySwitch});
+    if(new Date().getHours()>=17) reasons.push({t:'Fin de journée', d:'la fatigue s’accumule au fil des heures — version raccourcie. Les jours endurance, vise plutôt la première partie de journée.'});
+    reasons.push({t:'La marche compte comme un effort', d:'ce n’est pas de la récupération : tes jambes travaillent. Je l’espace donc de tes séances de force et de salle.'});
+  }
   reasons.push({t:'Priorité aux jambes', d:'ta SEP touche surtout les membres inférieurs — je leur donne plus de place dans la semaine qu’au haut du corps.'});
   if(arche.order==='alt') reasons.push({t:'Alternance effort / repos', d:'j’alterne renforcement et stabilité : tes muscles récupèrent pendant les exercices de proprioception.'});
   if(legHardRecent && !arche.leg) reasons.push({t:'Repos des jambes', d:'tu as sollicité tes jambes récemment — aujourd’hui on les laisse récupérer.'});
@@ -1458,6 +1581,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           if(cancelled)return; const cc=condFromCode(cur.weather_code);
           setWeather({status:'done',city:approx?city+' (approx.)':city,temp:Math.round(cur.temperature_2m),apparent:at,humidity:Math.round(cur.relative_humidity_2m),cond:cc.label,icon:cc.icon,heat:h});
           setMetrics(m=>({...m,heat:h}));
+          /* pluie/neige/orage (codes WMO ≥ 51) → la séance marche du jour basculera en intérieur */
+          try{ window.__saveWeatherToday&&window.__saveWeatherToday({heat:h, rainy:(cur.weather_code||0)>=51, temp:Math.round(cur.temperature_2m), cond:cc.label}); }catch(e){}
         }catch(e){ if(!cancelled) setWeather({status:'error'}); }
       }
       if(navigator.geolocation){
@@ -2669,6 +2794,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [goals,setGoals]=React.useState(window.__profileGoals());
     const gymCfg0=window.__readGymConfig();
     const [gymDays,setGymDays]=React.useState(()=>{ const o={}; Object.keys(gymCfg0.gymDays||{}).forEach(k=>{o[k]=[...(gymCfg0.gymDays[k]||[])];}); return o; });
+    const [perim,setPerim]=React.useState(window.__walkPerimeter());
+    const setPerimSave=v=>{ const nv=Math.max(4,Math.min(60,v)); setPerim(nv); window.__saveSettings({walkPerimeter:nv}); };
     const SY=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Troubles sensitifs'],['force','Faiblesse musculaire']];
     const GO=['Marcher plus longtemps','Garder l\'équilibre','Me renforcer','Réduire la fatigue','Gagner en souplesse'];
     const DAYS=[[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam'],[0,'Dim']];
@@ -2712,6 +2839,13 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               {[['g','Gauche'],['d','Droite'],[null,'Symétrique']].map(([v,lab])=>(
                 <button key={lab} onClick={()=>{ setSide(v); window.__saveSettings({affectedSide:v}); }} style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:600,padding:'10px 4px',borderRadius:11,cursor:'pointer',background:side===v?'rgba(47,191,161,0.14)':C.bg,color:side===v?C.tealDk:C.body,border:`1px solid ${side===v?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{lab}</button>
               ))}
+            </div>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,margin:'18px 0 8px'}}>Ton périmètre de marche</div>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.45,marginBottom:10}}>Combien de minutes peux-tu marcher d'une traite, sans pause ? Les séances marche démarrent à ~60&nbsp;% de cette valeur, fractionnées avec des pauses assises — et progressent pour l'étendre.</div>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <button onClick={()=>setPerimSave(perim-1)} style={{width:46,height:46,borderRadius:13,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:22,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",lineHeight:1,padding:0}}>−</button>
+              <div style={{flex:1,textAlign:'center'}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:26,fontWeight:600,color:C.ink}}>{perim}</span><span style={{fontSize:12.5,color:C.muted,marginLeft:6}}>min</span></div>
+              <button onClick={()=>setPerimSave(perim+1)} style={{width:46,height:46,borderRadius:13,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:22,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",lineHeight:1,padding:0}}>+</button>
             </div>
           </div>
 
