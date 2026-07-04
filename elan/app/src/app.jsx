@@ -841,18 +841,29 @@ window.__enduranceBlocks = function(opts){
   else kind = hasVelo ? (seed%2? 'bike':'walk') : 'walk';
   if(kind==='walk'){
     const P=window.__walkPerimeter();
-    let W=Math.min(Math.round(P*0.6)+Math.min(wLvl,window.__exMax), P);   // marche cumulée, plafonnée au périmètre
+    const L=Math.min(wLvl,window.__exMax);
+    /* Progression en deux axes (principe kiné) :
+       – le volume CUMULÉ démarre à ~60 % du périmètre et le DÉPASSE progressivement — c'est
+         l'intérêt du fractionné : les pauses assises permettent plus de volume total que la
+         marche continue max, et c'est cette surcharge qui étend l'enveloppe (L6 ≈ 1,4× le périmètre) ;
+       – chaque BLOC individuel reste sous ~80 % du périmètre et s'allonge avec le niveau :
+         on n'atteint JAMAIS le mur en continu pendant la séance — le périmètre se re-mesure
+         (test 6 min / réglage Profil), il ne se force pas. */
+    let W=Math.round(P*(0.6+0.13*L));
+    const maxW = tier==='low'?18 : tier==='high'?32 : 24;                  // garde-fou durée globale
+    W=Math.min(W,maxW);
     if(tier==='low') W=Math.round(W*0.7);
     if(evening) W=W-2;                                                     // fin de journée : version raccourcie
     W=Math.max(4,W);
-    const n = W>=14?4 : W>=8?3 : 2;
-    /* distribution EXACTE des minutes (jamais au-delà du périmètre) : les premiers blocs prennent le reste */
+    const blTarget=Math.max(3,Math.min(3+L, Math.round(P*0.8)));           // le bloc grandit avec le niveau, jamais ~au périmètre
+    const n=Math.max(2,Math.ceil(W/blTarget));
+    /* distribution EXACTE des minutes : les premiers blocs prennent le reste */
     const base=Math.max(2,Math.floor(W/n)), rem=Math.max(0,W-base*n);
     const pause=Math.max(60, 150-15*wLvl);                                 // pauses assises qui raccourcissent avec le niveau
     const blocks=[]; for(let i=0;i<n;i++) blocks.push(mkWalk(base+(i<rem?1:0),i,n,i<n-1?pause:0));
     const warm={ id:'walk-warm', name:'Mise en route', phase:'warmup', region:'cardio', unit:'min', min:2, workSec:120, rest:0, fixedDose:true,
       doseText:'2 min', desc:'2 min de marche très tranquille pour lancer la machine — posture haute, épaules relâchées.', muscles:'Jambes', position:'Départ de chez toi ou du couloir.', conseil:'', alternative:'' };
-    return { kind, blocks, warm, whySwitch, walkTotal:blocks.reduce((s,b)=>s+b.min,0), perimeter:P, level:wLvl };
+    return { kind, blocks, warm, whySwitch, walkTotal:blocks.reduce((s,b)=>s+b.min,0), blockMax:Math.max.apply(null,blocks.map(b=>b.min)), perimeter:P, level:wLvl };
   }
   if(kind==='bike'){
     let T=Math.min(24, 10+2*Math.min(bLvl,window.__exMax));
@@ -1036,7 +1047,10 @@ window.generateProgram = function(metrics, context){
   const reasons=[];
   reasons.push({t:'Séance pensée comme un kiné', d:arche.why});
   if(aeroMeta){
-    if(aeroMeta.kind==='walk') reasons.push({t:`Dosée sur TON périmètre (${aeroMeta.perimeter} min)`, d:`${aeroMeta.walkTotal} min de marche cumulée, fractionnée avec de vraies pauses assises — tu finis avec de la réserve, c'est voulu. On étend d'1 min par palier réussi, jamais au-delà de ton périmètre.`});
+    if(aeroMeta.kind==='walk'){
+      reasons.push({t:`Dosée sur TON périmètre (${aeroMeta.perimeter} min)`, d:`${aeroMeta.walkTotal} min de marche cumulée en blocs de ${aeroMeta.blockMax} min max, avec de vraies pauses assises. Le cumul dépasse peu à peu ton périmètre — c'est le fractionné qui le permet — mais chaque bloc reste en dessous : on étend l'enveloppe par en bas, jamais en tapant le mur.`});
+      if(aeroMeta.level>=4) reasons.push({t:'Ton endurance grandit', d:`tes blocs approchent ton périmètre déclaré. Quand un bloc de ${aeroMeta.blockMax} min te semble facile, refais le test de marche 6 min (onglet Tests) ou monte ton périmètre dans le Profil — toute la dose se recalera dessus.`});
+    }
     reasons.push({t:'Allure cible : le test de la parole', d:'tu dois pouvoir parler en marchant/pédalant, mais plus chanter. Si tu ne peux plus parler, ralentis.'});
     if(aeroMeta.whySwitch) reasons.push({t:'Adaptation du jour', d:aeroMeta.whySwitch});
     if(new Date().getHours()>=17) reasons.push({t:'Fin de journée', d:'la fatigue s’accumule au fil des heures — version raccourcie. Les jours endurance, vise plutôt la première partie de journée.'});
