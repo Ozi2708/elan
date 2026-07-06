@@ -1500,7 +1500,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 })();
 /* components block 2 */
 (function(){
-  const { EnergyGauge, MetricSlider, Btn, BrandMark, C } = window.EC;
+  const { EnergyGauge, MetricSlider, Btn, BrandMark, beep, vibe, unlockAudio, C } = window.EC;
   const EQUIP=window.EQUIP;
   function StreakBanner(){
     const streak=window.__streak?window.__streak():0;
@@ -1677,7 +1677,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     /* Lever de chaise — pré-remplir la valeur depuis ta base + chrono optionnel de 30 s */
     React.useEffect(()=>{ const s=window.__readBase('elan_sts_base'); if(s.avg!=null) setTest(t=>({...t,reps:Math.round(s.avg)})); },[]);
     React.useEffect(()=>{
-      if(test.chrono==null||test.chrono<=0)return;
+      if(test.chrono==null)return;
+      if(test.chrono<=0){ beep(1046,0.45,0.22); vibe([120,70,120]); return; }   // fin des 30 s : ding franc + vibration (audible sans regarder l'écran)
+      if(test.chrono<=3) beep(880,0.12,0.16);                                    // décompte sonore des 3 dernières secondes
       const id=setTimeout(()=>setTest(t=>({...t,chrono:t.chrono-1})),1000);
       return()=>clearTimeout(id);
     },[test.chrono]);
@@ -1754,9 +1756,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               </div>
               <Btn variant="primary" size="md" onClick={validateSts}>Valider</Btn>
             </div>
-            <button onClick={()=>setTest(t=>({...t,chrono:t.chrono==null||t.chrono<=0?30:null}))} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,width:'100%',background:'none',border:`1px dashed ${C.line2}`,borderRadius:12,padding:'9px',cursor:'pointer',color:test.chrono>0?C.orange:C.muted,fontSize:12.5,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>
+            <button onClick={()=>{ if(test.chrono==null||test.chrono<=0){ unlockAudio(); setTest(t=>({...t,chrono:30})); } else { setTest(t=>({...t,chrono:null})); } }} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,width:'100%',background:test.chrono===0?'rgba(242,96,46,0.13)':'none',border:test.chrono===0?`1px solid ${C.orange}`:`1px dashed ${C.line2}`,borderRadius:12,padding:'9px',cursor:'pointer',color:test.chrono===0?C.orange:test.chrono>0?C.orange:C.muted,fontSize:12.5,fontWeight:test.chrono===0?700:500,fontFamily:"'DM Sans',sans-serif",animation:test.chrono===0?'pulseStop 0.9s ease-in-out 3':'none',transition:'background 220ms ease,border-color 220ms ease'}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4M9 2h6"/></svg>
-              {test.chrono==null?'Démarrer le chrono 30 s (optionnel)':test.chrono>0?`${test.chrono} s — compte tes levers…`:'Temps écoulé — saisis ton total'}
+              {test.chrono==null?'Démarrer le chrono 30 s (optionnel)':test.chrono>0?`${test.chrono} s — compte tes levers…`:'⏱ Temps écoulé — saisis ton total'}
             </button>
           </>) : (
             <div style={{display:'flex',alignItems:'center',gap:14}}>
@@ -2081,6 +2083,10 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
   function FocusScreen({ program, onBack }) {
     const exs=program.exercises;
+    /* Endurance (marche / vélo) : une fois le 1er minuteur lancé, les blocs cardio s'enchaînent
+       seuls — c'est le but de l'exercice. Sur toutes les autres séances on garde la main. */
+    const autoChain=(exs||[]).some(e=>(e.phase||'main')==='main' && e.area==='cardio');
+    const chainRef=React.useRef(false);
     const __r0=window.__resumableSession();
     const [exIdx,setExIdx]=React.useState(__r0&&__r0.exIdx!=null?__r0.exIdx:0);
     const [setNum,setSetNum]=React.useState(__r0&&__r0.setNum!=null?__r0.setNum:1);
@@ -2156,7 +2162,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{
       fired.current=false;
       if(phase==='rest'){ const rs=restKindRef.current==='side'?7:restSec; setRemaining(rs); setRunning(true); }
-      else { setWarmStep(0); setRemaining(isStepped ? stepDur : (ex.workSec||0)); setRunning(false); }
+      else { setWarmStep(0); setRemaining(isStepped ? stepDur : (ex.workSec||0)); setRunning(autoChain && chainRef.current && ex.area==='cardio' && (ex.workSec||0)>0); }
     },[exIdx,setNum,phase]);
     // pré-remplir poids/reps depuis la dernière séance (musculation salle)
     React.useEffect(()=>{ const e=exs[exIdx]; if(e&&e.weighted){ const last=window.__lastStrength(e.id); setLoadW(last?last.weight:10); setLoadR(last?last.reps:(e.reps||8)); } },[exIdx]);
@@ -2210,7 +2216,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       else { window.__clearSessionState(); setAllDone(true); }
     }
     function jump(i){ if(i<0||i>exs.length-1) return; setExIdx(i); setSetNum(1); setPhase('work'); setSide(firstSide); }
-    const startWork=()=>{ unlockAudio(); setRunning(true); };
+    const startWork=()=>{ unlockAudio(); chainRef.current=true; setRunning(true); };
     const nextWarmStep=()=>{ fired.current=false; if(warmStep<warmSteps.length-1){ setWarmStep(s=>s+1); setRemaining(stepDur); } else { setRunning(false); completeSet(); } };
 
     const specReps=ex.reps;

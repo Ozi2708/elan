@@ -45,6 +45,7 @@
   @keyframes sheetUp { from { transform:translateY(100%);} to { transform:translateY(0);} }
   @keyframes toastUp { from { opacity:0; transform:translateY(16px);} to { opacity:1; transform:translateY(0);} }
   @keyframes barGrow { from { transform:scaleX(0);} to { transform:scaleX(1);} }
+  @keyframes pulseStop { 0%,100% { box-shadow:0 0 0 0 rgba(242,96,46,0);} 50% { box-shadow:0 0 0 5px rgba(242,96,46,0.20);} }
   /* ── Splash de lancement ── */
   #splash {
     position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
