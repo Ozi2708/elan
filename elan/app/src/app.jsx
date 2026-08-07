@@ -92,6 +92,12 @@ window.EQUIP = [
   {id:'tapis',      label:'Tapis'},
 ];
 
+/* Typographie française : `text-transform:capitalize` met une majuscule à CHAQUE mot
+   (« Vendredi 7 Août », « Bilan Mensuel De Août »). On capitalise donc la première lettre
+   seulement, et on élide « de » devant une voyelle (« d'août », pas « de août »). */
+window.__capFirst=function(s){ return String(s||'').replace(/^./,function(c){ return c.toUpperCase(); }); };
+window.__deMois=function(m){ const s=String(m||''); return (/^[aeiouyéèêh]/i.test(s)?'d’':'de ')+s; };
+
 window.ED = {
   get user(){ return window.__profileName?window.__profileName():'Val'; },
   today: new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(new Date()),
@@ -235,6 +241,54 @@ window.__baselineLevel=function(area){ const b=window.__readBaseline(); if(!b||!
 window.__readSettings=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_settings'))||'{}')||{}; }catch(e){ return {}; } };
 window.__saveSettings=function(patch){ const s=Object.assign(window.__readSettings(),patch||{}); try{ if(window.localStorage) localStorage.setItem('elan_settings',JSON.stringify(s)); }catch(e){} return s; };
 window.__profileName=function(){ const n=window.__readSettings().name; return (n&&String(n).trim())||'Val'; };
+
+/* ─── Rappels quotidiens ───────────────────────────────────────────────────────
+   Élan n'a pas de serveur, donc pas de push distant : le rappel est LOCAL.
+   Trois voies, de la plus fiable à la moins fiable, qui se complètent :
+     1. app ouverte  → minuterie en page, déclenchée à l'heure pile ;
+     2. app installée sur Android → periodicSync réveille le service worker ;
+     3. dans tous les cas → rattrapage à la prochaine ouverture de l'app.
+   Le service worker garde la trace du dernier jour notifié : jamais deux fois par jour. */
+window.__reminderCfg=function(){ const r=window.__readSettings().reminder||{}; return { on:!!r.on, hour:r.hour!=null?r.hour:18, min:r.min!=null?r.min:0 }; };
+window.__saveReminder=function(patch){ const cur=window.__reminderCfg(); const next=Object.assign({},cur,patch||{}); window.__saveSettings({reminder:next}); window.__syncReminder(); return next; };
+window.__notifState=function(){ try{ if(!('Notification' in window)) return 'unsupported'; return Notification.permission; }catch(e){ return 'unsupported'; } };
+window.__askNotifPermission=function(){ try{ if(!('Notification' in window)) return Promise.resolve('unsupported'); return Notification.requestPermission(); }catch(e){ return Promise.resolve('denied'); } };
+/* Pousse la config courante vers le service worker (il en a besoin hors de la page). */
+window.__syncReminder=function(){
+  try{
+    const cfg=window.__reminderCfg();
+    const m=(window.__reminderBody&&window.__reminderBody())||'Ta séance du jour t’attend.';
+    const payload={ on:cfg.on, hour:cfg.hour, min:cfg.min, body:m, doneDate:(window.__sessionDoneToday&&window.__sessionDoneToday())?window.__today():'' };
+    if(navigator.serviceWorker&&navigator.serviceWorker.ready){
+      navigator.serviceWorker.ready.then(function(reg){
+        if(reg.active) reg.active.postMessage({type:'elan-cfg',cfg:payload});
+        /* periodicSync : Android + PWA installée. Best effort, le navigateur choisit le moment. */
+        if(cfg.on && reg.periodicSync){ reg.periodicSync.register('elan-daily',{minInterval:12*60*60*1000}).catch(function(){}); }
+        else if(reg.periodicSync&&reg.periodicSync.unregister){ reg.periodicSync.unregister('elan-daily').catch(function(){}); }
+      }).catch(function(){});
+    }
+  }catch(e){}
+};
+/* Rattrapage + minuterie en page. Renvoie un cleanup. */
+window.__armReminder=function(){
+  let tid=null;
+  const fire=function(){ try{ if(navigator.serviceWorker&&navigator.serviceWorker.ready) navigator.serviceWorker.ready.then(function(reg){ if(reg.active) reg.active.postMessage({type:'elan-check'}); }); }catch(e){} };
+  const plan=function(){
+    if(tid){ clearTimeout(tid); tid=null; }
+    const cfg=window.__reminderCfg();
+    if(!cfg.on||window.__notifState()!=='granted') return;
+    window.__syncReminder();
+    fire();                                   // rattrapage immédiat si l'heure est déjà passée
+    const now=new Date(); const t=new Date(now); t.setHours(cfg.hour,cfg.min,0,0);
+    if(t<=now) t.setDate(t.getDate()+1);       // sinon on vise la prochaine occurrence
+    const wait=Math.min(t-now, 6*60*60*1000);  // les minuteries longues sont peu fiables : on se réarme
+    tid=setTimeout(function(){ fire(); plan(); }, Math.max(1000,wait));
+  };
+  plan();
+  const onVis=function(){ if(document.visibilityState==='visible') plan(); };
+  document.addEventListener('visibilitychange',onVis);
+  return function(){ if(tid) clearTimeout(tid); document.removeEventListener('visibilitychange',onVis); };
+};
 window.__affectedSide=function(){ const s=window.__readSettings().affectedSide; return (s==='g'||s==='d')?s:null; }; // 'g' gauche | 'd' droite | null
 /* Périmètre de marche (min) : réglé par l'utilisateur, sinon déduit du niveau cardio (test 6 min).
    C'est la référence de dose des séances marche — on programme EN-DESSOUS, jamais au-delà. */
@@ -321,6 +375,7 @@ window.__logSessionDone=function(info){
   const cut=new Date(Date.now()-60*86400000).toISOString().slice(0,10);
   const trimmed=f.filter(e=>e.date>cut).sort((a,b)=>a.date<b.date?-1:1);
   try{ if(window.localStorage) localStorage.setItem('elan_sessHistory',JSON.stringify(trimmed)); }catch(e){}
+  if(window.__syncReminder) window.__syncReminder();   // séance faite : plus de rappel aujourd'hui
   return trimmed;
 };
 /* streak = nb de jours consécutifs (aujourd'hui ou hier inclus) avec au moins une séance */
@@ -339,13 +394,20 @@ window.__weekDoneCount=function(){
   const cut=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
   return [...new Set(window.__sessHistory().filter(e=>e.date>cut).map(e=>e.date))].length;
 };
+/* Objectif hebdomadaire, réglable (2 à 7 jours actifs). Défaut 4. */
 window.__WEEK_GOAL=4;
+window.__weeklyGoal=function(){ const g=window.__readSettings().weeklyGoal; return (g!=null&&g>=2&&g<=7)?Math.round(g):4; };
+/* Jours d'entraînement habituels (0 = dimanche … 6 = samedi).
+   Vide = pas de jours fixes : on ne juge alors QUE sur le total de la semaine, et le
+   calendrier ne marque jamais un jour « manqué » — sinon l'app reprocherait un repos
+   qu'elle prescrit elle-même par ailleurs. */
+window.__trainDays=function(){ const d=window.__readSettings().trainDays; return Array.isArray(d)?d.filter(x=>x>=0&&x<=6):[]; };
 /* Régularité HEBDO : la bonne métrique en SEP — les jours de repos sont prescrits, ils ne
    « cassent » rien. Une semaine est réussie à ≥ 4 jours actifs ; on compte les semaines ISO
    réussies consécutives (la semaine en cours compte si déjà réussie, sinon elle ne casse pas). */
 window.__weekDays=function(){ const m={}; window.__sessHistory().forEach(e=>{ const k=window.__isoWeekKey(e.date); (m[k]=m[k]||new Set()).add(e.date); }); return m; };
 window.__weekStreak=function(){
-  const m=window.__weekDays(); const goal=window.__WEEK_GOAL;
+  const m=window.__weekDays(); const goal=window.__weeklyGoal();
   const wk=d=>window.__isoWeekKey(d);
   let n=0; let cur=new Date();
   if((m[wk(cur)]||new Set()).size>=goal){ n=1; }
@@ -354,7 +416,7 @@ window.__weekStreak=function(){
   return n;
 };
 window.__bestWeekStreak=function(){
-  const m=window.__weekDays(); const goal=window.__WEEK_GOAL;
+  const m=window.__weekDays(); const goal=window.__weeklyGoal();
   const keys=Object.keys(m).filter(k=>m[k].size>=goal);
   if(!keys.length) return window.__weekStreak();
   /* reconstruit les suites de semaines réussies en balayant semaine par semaine depuis la plus ancienne */
@@ -525,13 +587,45 @@ window.__addTUG=function(sec,dateStr){ const list=window.__readTUG().slice(); co
 window.__removeTUG=function(date){ const list=window.__readTUG().filter(function(e){return e.date!==date;}); try{ if(window.localStorage) localStorage.setItem('elan_tug',JSON.stringify(list)); }catch(e){} return list; };
 window.__tugBand=function(s){ return s==null?null : s<10?{label:'Mobilité normale',tone:'good'} : s<13.5?{label:'À surveiller',tone:'mid'} : s<20?{label:'Risque de chute majoré',tone:'warn'} : {label:'Aide souvent nécessaire',tone:'warn'}; };
 
-/* ─── Journal des séances d'étirement (annexe au programme, n'affecte pas les stats d'entraînement) ─── */
+/* ─── Journal des routines annexes — étirements ET équilibre (n'affecte pas les stats d'entraînement,
+       ni le verrou « une séance Élan par jour » : ce sont des compléments libres) ─── */
 window.__readStretchLog=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_stretch_log'))||'[]')||[]; }catch(e){ return []; } };
-window.__logStretchSession=function(meta){ const log=window.__readStretchLog(); log.push({date:window.__today(), id:(meta&&meta.id)||'r', title:(meta&&meta.title)||'Étirements', min:(meta&&meta.min)||5, ts:Date.now()});
+window.__logStretchSession=function(meta){ const log=window.__readStretchLog();
+  log.push({date:window.__today(), id:(meta&&meta.id)||'r', title:(meta&&meta.title)||'Étirements', min:(meta&&meta.min)||5, kind:(meta&&meta.kind)||'stretch', ts:Date.now()});
   const cut=new Date(Date.now()-365*86400000).toISOString().slice(0,10); const trimmed=log.filter(function(e){return e.date>cut;});
   try{ if(window.localStorage) localStorage.setItem('elan_stretch_log',JSON.stringify(trimmed)); }catch(e){} return trimmed; };
-window.__stretchStats=function(){ const log=window.__readStretchLog(); const days=[...new Set(log.map(function(e){return e.date;}))]; const d7=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+/* kind : 'stretch' | 'balance' | undefined (= toutes). Les entrées d'avant l'ajout des
+   routines équilibre n'ont pas de champ kind : on les considère comme des étirements. */
+window.__stretchStats=function(kind){ const all=window.__readStretchLog();
+  const log=kind?all.filter(function(e){return (e.kind||'stretch')===kind;}):all;
+  const days=[...new Set(log.map(function(e){return e.date;}))]; const d7=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
   return { total:log.length, days:days.length, week:days.filter(function(d){return d>=d7;}).length, last:log.length?log[log.length-1]:null }; };
+/* ─── Journal des symptômes & poussées ────────────────────────────────────────
+   Une ligne par jour, facultative. Ce n'est PAS un outil de diagnostic : c'est une
+   trace datée à montrer en consultation, et un repère pour relire une mauvaise période.
+   Une entrée par date (on remplace si on ressaisit le même jour). */
+window.__SYMPTOMS=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Fourmillements / engourdissements'],['force','Faiblesse musculaire'],['vision','Troubles visuels'],['douleur','Douleurs'],['cognitif','Concentration / mémoire'],['vessie','Troubles urinaires']];
+window.__readSymptomLog=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_symptoms'))||'[]')||[]; }catch(e){ return []; } };
+window.__symptomDay=function(date){ const d=date||window.__today(); return window.__readSymptomLog().filter(function(e){return e.date===d;})[0]||null; };
+window.__logSymptomDay=function(entry){
+  const d=(entry&&entry.date)||window.__today();
+  const log=window.__readSymptomLog().filter(function(e){return e.date!==d;});
+  const syms=(entry&&entry.syms)||[], flare=!!(entry&&entry.flare), note=((entry&&entry.note)||'').slice(0,400), sev=(entry&&entry.sev)||0;
+  if(syms.length||flare||note){ log.push({date:d,syms:syms,flare:flare,sev:sev,note:note,ts:Date.now()}); }   // entrée vide = suppression
+  const cut=new Date(Date.now()-400*86400000).toISOString().slice(0,10);
+  const trimmed=log.filter(function(e){return e.date>cut;}).sort(function(a,b){return a.date<b.date?-1:1;});
+  try{ if(window.localStorage) localStorage.setItem('elan_symptoms',JSON.stringify(trimmed)); }catch(e){}
+  return trimmed;
+};
+window.__symptomStats=function(days){
+  const n=days||30; const cut=new Date(Date.now()-n*86400000).toISOString().slice(0,10);
+  const log=window.__readSymptomLog().filter(function(e){return e.date>cut;});
+  const counts={}; log.forEach(function(e){ (e.syms||[]).forEach(function(s){ counts[s]=(counts[s]||0)+1; }); });
+  const top=Object.keys(counts).map(function(k){return {key:k,n:counts[k]};}).sort(function(a,b){return b.n-a.n;});
+  const flares=log.filter(function(e){return e.flare;});
+  return { entries:log.length, days:n, top:top, flares:flares.length, lastFlare:flares.length?flares[flares.length-1].date:null, log:log };
+};
+
 /* ─── Mesures mensuelles masquées : permet de supprimer une mesure erronée
    sans toucher aux données de démo. Identifiant "moisLabel|clé". ─── */
 window.__readBilanHidden=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_bilan_hidden'))||'[]'); }catch(e){ return []; } };
@@ -549,8 +643,44 @@ window.__baselineSkipped=function(){ try{ return (window.localStorage&&localStor
 window.__markBaselineSkipped=function(){ try{ if(window.localStorage) localStorage.setItem('elan_baseline_skip','1'); }catch(e){} };
 window.__clearBaselineSkip=function(){ try{ if(window.localStorage) localStorage.removeItem('elan_baseline_skip'); }catch(e){} };
 /* ─── Réinitialisation totale : toutes les données locales d'Élan ─── */
-window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_sts_base','elan_tug','elan_stretch_log','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks'];
+window.__elanKeys=['elan_difficulties','elan_strength','elan_sts_log','elan_progress','elan_baseline','elan_baseline_skip','elan_sessHistory','elan_checkin','elan_session_state','elan_walk6','elan_bilan_done','elan_bilan_hidden','elan_rt_base','elan_sts_base','elan_tug','elan_stretch_log','elan_recap_week','elan_recap_month','elan_forme_log','elan_bilans','elan_settings','elan_weekly_blocks','elan_symptoms'];
 window.__resetAllData=function(){ try{ if(window.localStorage){ window.__elanKeys.forEach(function(k){ localStorage.removeItem(k); }); /* filet de sécurité : supprime toute clé résiduelle « elan_* » (ré-initialisation 100% propre) */ for(var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) localStorage.removeItem(k); } } }catch(e){} };
+
+/* ─── Sauvegarde / restauration ────────────────────────────────────────────────
+   Toutes les données d'Élan vivent dans le localStorage de CE navigateur : vider le
+   cache, changer de téléphone ou réinstaller efface des mois de suivi. L'export
+   produit un fichier JSON autonome, l'import le remet en place. C'est aussi le seul
+   moyen de transférer son historique vers un nouvel appareil. */
+window.__exportData=function(){
+  const data={};
+  try{ if(window.localStorage) for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.indexOf('elan_')===0) data[k]=localStorage.getItem(k); } }catch(e){}
+  return { app:'elan', version:1, exportedAt:new Date().toISOString(), keys:Object.keys(data).length, data };
+};
+window.__exportFilename=function(){ return 'elan-sauvegarde-'+window.__today()+'.json'; };
+/* Validation seule, sans rien écrire — l'app confirme avec l'utilisateur avant de toucher
+   à ses données. Renvoie {ok, entries, exportedAt} ou {ok:false, error}. */
+window.__validateImport=function(raw){
+  let parsed;
+  try{ parsed=typeof raw==='string'?JSON.parse(raw):raw; }catch(e){ return {ok:false,error:'Fichier illisible — ce n’est pas un JSON valide.'}; }
+  if(!parsed||typeof parsed!=='object') return {ok:false,error:'Fichier vide ou inattendu.'};
+  if(parsed.app!=='elan'||!parsed.data||typeof parsed.data!=='object') return {ok:false,error:'Ce fichier n’est pas une sauvegarde Élan.'};
+  const entries=Object.keys(parsed.data).filter(k=>k.indexOf('elan_')===0);
+  if(!entries.length) return {ok:false,error:'Sauvegarde vide — aucune donnée Élan dedans.'};
+  /* On valide tout AVANT d'écrire : un fichier à moitié corrompu ne doit jamais laisser
+     l'app dans un état bâtard. */
+  for(const k of entries){ if(typeof parsed.data[k]!=='string') return {ok:false,error:'Sauvegarde corrompue (clé « '+k+' »).'}; }
+  return {ok:true,parsed,entries,exportedAt:parsed.exportedAt||null};
+};
+/* Écrit réellement. `replace` : true = repart de zéro, false = fusionne (l'import gagne). */
+window.__importData=function(raw, replace){
+  const v=window.__validateImport(raw);
+  if(!v.ok) return v;
+  try{
+    if(replace) window.__resetAllData();
+    for(const k of v.entries) localStorage.setItem(k,v.parsed.data[k]);
+  }catch(e){ return {ok:false,error:'Écriture impossible — stockage plein ou bloqué.'}; }
+  return {ok:true,keys:v.entries.length,exportedAt:v.exportedAt};
+};
 window.__longTermGoals=function(){
   const b=window.__readBaseline();
   if(!b||!b.done) return [];   // pas d'objectifs tant que le test d'entrée n'est pas fait
@@ -741,6 +871,61 @@ function __estSec(e){
   return sets*perSet;
 }
 function __sessionDuration(exs){ return Math.max(5, Math.round(exs.reduce((s,e)=>s+__estSec(e),0)/60)); }
+
+/* Allège la dose d'un exercice déjà calibré, de `n` crans, pour AUJOURD'HUI seulement.
+   Le niveau acquis n'est pas touché : c'est une adaptation du jour, pas une régression. */
+window.__easeExercise=function(e,n){
+  if(!e||!n) return e;
+  const o={...e};
+  const f=Math.pow(0.85,n);
+  if(o.sets) o.sets=Math.max(1,o.sets-n);
+  const side=o.side==='each'?` par ${o.sideLabel||'côté'}`:'';
+  if(o.reps){ o.reps=Math.max(5,Math.round(o.reps*f)); o.doseText=`${o.sets} série${o.sets>1?'s':''} de ${o.reps} répétitions${side}`; }
+  else if(o.sec){ o.sec=Math.max(15,Math.round(o.sec*f/5)*5); o.workSec=o.sec; o.duration=`${o.sec} s`; o.doseText=`${o.sets} × ${o.sec} secondes${side}`; }
+  else if(o.min){ o.min=Math.max(2,Math.round(o.min*f)); o.workSec=o.min*60; o.duration=`${o.min} min`; o.doseText=`${o.min} min`; }
+  o.restSec=Math.round((o.restSec||0)*(1+0.15*n));
+  o.eased=n;
+  return o;
+};
+
+/* ─── Version courte (~10 min) ─────────────────────────────────────────────────
+   Les jours de poussée, de grosse fatigue ou de journée pleine, le choix ne doit pas
+   être « la séance entière ou rien » : faire un peu entretient les acquis, et surtout
+   la régularité. On garde la colonne vertébrale de la séance (échauffement court, les
+   exercices les plus prioritaires, un retour au calme) et on coupe le volume.
+   Le releveur du pied et la mobilité sont protégés : ce sont les axes qu'on ne saute pas. */
+window.__shortenProgram=function(prog, target){
+  if(!prog||!prog.exercises) return prog;
+  const CAP=(target||10)*60;
+  const keepFirst=e=>/^dorsi/.test(e.id||'')||(e.targets||[]).includes('mobilite');
+  const warm=prog.exercises.filter(e=>e.phase==='warmup').slice(0,1).map(e=>{
+    const o={...e}; const cap=Math.min(o.workSec||120,120);
+    o.workSec=cap; o.sec=o.sec?Math.min(o.sec,120):o.sec; if(o.min) o.min=Math.max(1,Math.round(cap/60));
+    o.duration=o.min?`${o.min} min`:`${cap} s`; o.doseText=o.min?`${o.min} min`:o.doseText;
+    return o;
+  });
+  const cool=prog.exercises.filter(e=>e.phase==='cooldown').slice(0,1);
+  /* Les prioritaires d'abord (releveur, mobilité), puis l'ordre d'origine. */
+  const mains=prog.exercises.filter(e=>(e.phase||'main')==='main');
+  const ordered=[...mains.filter(keepFirst),...mains.filter(e=>!keepFirst(e))];
+  const budget=CAP-warm.reduce((s,e)=>s+__estSec(e),0)-cool.reduce((s,e)=>s+__estSec(e),0);
+  const picked=[]; let acc=0;
+  for(const e of ordered){
+    const o={...e};
+    if(o.sets>1){ o.sets=Math.max(1,Math.min(2,o.sets-1)); if(o.doseText) o.doseText=o.doseText.replace(/^\d+\s*(séries?|×)/,m=>m.replace(/^\d+/,String(o.sets))); }
+    if(o.min){ o.min=Math.max(2,Math.round(o.min*0.5)); o.workSec=o.min*60; o.duration=`${o.min} min`; o.doseText=`${o.min} min`; }
+    const c=__estSec(o);
+    if(picked.length>=1 && acc+c>budget) break;     // au moins 1 exercice principal, jamais plus que le budget
+    picked.push(o); acc+=c;
+    if(picked.length>=4) break;
+  }
+  const exercises=__ordered([...warm,...picked,...cool]);
+  return {...prog, exercises, duration:__sessionDuration(exercises),
+    title:prog.title, short:true, sessionId:(prog.sessionId||'ia')+'-court',
+    intensity:'Courte',
+    reasons:[{t:'Version courte demandée', d:`Format ~${target||10} minutes : j'ai gardé l'échauffement, ${picked.length} exercice${picked.length>1?'s':''} essentiel${picked.length>1?'s':''} et le retour au calme, et j'ai coupé le volume. Faire un peu entretient tes acquis — et surtout ta régularité.`},
+      ...(prog.reasons||[]).slice(0,3)]};
+};
 /* trie échauffement → travail → retour au calme tout en gardant l'ordre du kiné à l'intérieur */
 const __PHASE={warmup:0,main:1,cooldown:2};
 function __ordered(exs){ return exs.map((e,i)=>[e,i]).sort((a,b)=>(__PHASE[a[0].phase]-__PHASE[b[0].phase])||(a[1]-b[1])).map(x=>x[0]); }
@@ -1433,7 +1618,7 @@ const TABS=[
   {id:'today',label:"Auj.",icon:(a,s)=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={a?C.teal:C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>},
   {id:'progress',label:"Progrès",icon:(a,s)=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={a?C.teal:C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>},
   {id:'calendar',label:"Agenda",icon:(a,s)=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={a?C.teal:C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>},
-  {id:'stretching',label:"Étire.",icon:(a,s)=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={a?C.teal:C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>},
+  {id:'stretching',label:"Routines",icon:(a,s)=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={a?C.teal:C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>},
 ];
 function BottomNav({ activeTab, onTabChange }) {
   const ai=TABS.findIndex(t=>t.id===activeTab);
@@ -1505,7 +1690,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   function StreakBanner(){
     const streak=window.__streak?window.__streak():0;
     const week=window.__weekDoneCount?window.__weekDoneCount():0;
-    const goal=4;
+    const goal=window.__weeklyGoal();
     const did=window.__sessHistory?window.__sessHistory().some(e=>e.date===new Date().toISOString().slice(0,10)):false;
     const msg = week>=goal ? 'Semaine réussie — tout le reste est du bonus !'
       : did ? 'Séance du jour faite — bravo !'
@@ -1543,7 +1728,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{marginBottom:24}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:6}}>Check-in du jour</p>
           <h1 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.025em',lineHeight:1.1,marginBottom:6}}>Bonjour, {window.ED.user}</h1>
-          <p style={{fontSize:13,color:C.muted,textTransform:'capitalize'}}>{window.ED.today}</p>
+          <p style={{fontSize:13,color:C.muted}}>{window.__capFirst(window.ED.today)}</p>
         </div>
         <StreakBanner/>
         <div style={{...cardBase,padding:'22px 18px',marginBottom:14}}><EnergyGauge value={metrics.energy} onChange={n=>set('energy',n)}/></div>
@@ -1705,7 +1890,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{marginBottom:22}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:6}}>Check-in du jour</p>
           <h1 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.025em',lineHeight:1.1,marginBottom:6}}>Bonjour, {window.ED.user}</h1>
-          <p style={{fontSize:13,color:C.muted,textTransform:'capitalize'}}>{window.ED.today}</p>
+          <p style={{fontSize:13,color:C.muted}}>{window.__capFirst(window.ED.today)}</p>
         </div>
         <StreakBanner/>
 
@@ -1872,16 +2057,17 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               </div>
             </div>);
   }
-  function ProgramScreen({ program, onStart, session, setSession, onReviewCheckin }) {
+  function ProgramScreen({ program, onStart, onShort, session, setSession, onReviewCheckin }) {
     const spec=ex=>ex.doseText||ex.duration||'';
     const resume=window.__resumableSession();
     const [open,setOpen]=React.useState(null);
+    const [listOpen,setListOpen]=React.useState(false);
     const [sheet,setSheet]=React.useState(null);
     const [whyOpen,setWhyOpen]=React.useState(false);
     const r=program.readiness, rc=r>=70?C.orange:r>=42?C.teal:'#9DB0AB';
     const meta={background:C.card,border:`1px solid ${C.line}`,borderRadius:12,padding:'8px 10px',boxShadow:C.sh};
     return (
-      <div style={{minHeight:'100%',padding:'18px 24px 24px'}}>
+      <div style={{flex:'1 0 auto',padding:'18px 24px 24px',display:'flex',flexDirection:'column'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Programme généré pour toi</p>
           <BrandMark/>
@@ -1889,7 +2075,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <h2 style={{fontFamily:'Georgia,serif',fontSize:28,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',marginBottom:14}}>{program.title}</h2>
         <div style={{display:'flex',gap:5,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,padding:4,marginBottom:session.mode==='ia'?18:8,boxShadow:C.sh}}>
           {[{k:'ia',label:'Élan IA'},{k:'custom',label:'Sur mesure'},{k:'gym',label:'Salle'}].map(o=>{const a=session.mode===o.k;return(
-            <button key={o.k} onClick={()=>{ o.k==='ia' ? setSession.setMode('ia') : o.k==='custom' ? setSheet('goals') : setSheet('gym'); }} style={{flex:1,padding:'9px 6px',borderRadius:11,border:'none',cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:600,background:a?'rgba(47,191,161,0.14)':'transparent',color:a?C.tealDk:C.muted,transition:'all 160ms ease'}}>{o.label}</button>);})}
+            <button key={o.k} onClick={()=>{ o.k==='ia' ? setSession.setMode('ia') : o.k==='custom' ? setSheet('goals') : setSheet('gym'); }} style={{flex:1,minHeight:44,padding:'9px 6px',borderRadius:11,border:'none',cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:600,background:a?'rgba(47,191,161,0.14)':'transparent',color:a?C.tealDk:C.muted,transition:'all 160ms ease'}}>{o.label}</button>);})}
         </div>
         {session.mode!=='ia' && (
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
@@ -1923,21 +2109,50 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             {program.reasons.map((rs,i)=>(<div key={i} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{marginTop:6,width:5,height:5,borderRadius:'50%',background:C.teal,flexShrink:0}}/><span style={{fontSize:13,lineHeight:1.45,color:C.body}}><b style={{color:C.ink,fontWeight:600}}>{rs.t}</b> — {rs.d}</span></div>))}
           </div>)}
         </div>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:12}}>
-          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',margin:0}}>Ton programme</p>
-          <span style={{fontSize:11,color:C.faint}}>Touche pour les détails</span>
-        </div>
-        <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:24}}>
-          {program.exercises.map((ex,i)=>(<ExRow key={ex.id} ex={ex} i={i} isOpen={open===i} onToggle={()=>setOpen(open===i?null:i)}/>))}
-        </div>
+        {/* Liste repliée par défaut : elle est consultable, pas obligatoire — sans elle,
+            le bouton « Commencer » restait à ~430 px sous le pli. */}
+        <button onClick={()=>setListOpen(o=>!o)} aria-expanded={listOpen} style={{display:'flex',justifyContent:'space-between',alignItems:'center',width:'100%',minHeight:44,background:'none',border:0,padding:0,cursor:'pointer',marginBottom:listOpen?12:0,textAlign:'left',fontFamily:"'DM Sans',sans-serif"}}>
+          <span style={{fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase'}}>Ton programme</span>
+          <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:C.tealDk,fontWeight:600}}>
+            {listOpen?'Masquer le détail':`${program.exercises.length} exercices`}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{transform:listOpen?'rotate(180deg)':'none',transition:'transform 0.18s'}}><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+        {listOpen && (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {program.exercises.map((ex,i)=>(<ExRow key={ex.id} ex={ex} i={i} isOpen={open===i} onToggle={()=>setOpen(open===i?null:i)}/>))}
+          </div>
+        )}
         {resume&&(
-          <div style={{marginBottom:12,display:'flex',alignItems:'center',gap:10,background:'rgba(47,191,161,0.1)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:14,padding:'11px 14px'}}>
+          <div style={{marginTop:16,display:'flex',alignItems:'center',gap:10,background:'rgba(47,191,161,0.1)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:14,padding:'11px 14px'}}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polyline points="13 19 22 12 13 5"/><polyline points="2 19 11 12 2 5"/></svg>
             <span style={{flex:1,fontSize:12.5,color:C.body}}>Séance en cours — exercice {Math.min((resume.exIdx||0)+1,program.exercises.length)}/{program.exercises.length}.</span>
             <button onClick={()=>{window.__clearSessionState();onStart();}} style={{background:'none',border:'none',color:C.muted,fontSize:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",textDecoration:'underline',flexShrink:0}}>Recommencer</button>
           </div>
         )}
-        <Btn variant={program.tier==='high'?'energy':'primary'} size="lg" fullWidth onClick={onStart}>{resume?'Reprendre ma séance →':'Commencer la séance →'}</Btn>
+        {/* Barre d'action collante : le bouton reste atteignable sans scroller.
+            `sticky` garde sa place dans le flux, donc il ne recouvre jamais le contenu ;
+            le décalage bas le pose juste au-dessus de la pastille de navigation. */}
+        {/* `bottom:0` et pas davantage : l'offset sticky se mesure depuis la content box du
+            conteneur de défilement, qui réserve déjà la hauteur de la nav flottante en
+            padding-bas. Ajouter un décalage ferait flotter la barre bien trop haut. */}
+        <div style={{position:'sticky',bottom:0,zIndex:60,marginTop:'auto',paddingTop:22}}>
+          {/* Fond opaque descendu jusqu'au bas de l'écran (zone réservée à la nav flottante),
+              sinon les exercices défilent en transparence sous le bouton. En absolu : il
+              déborde sans peser sur le flux, donc sans perturber le calage sticky. */}
+          <div aria-hidden="true" style={{position:'absolute',left:0,right:0,top:0,bottom:'calc(-92px - max(env(safe-area-inset-bottom, 0px), 22px))',zIndex:-1,pointerEvents:'none',background:`linear-gradient(180deg,rgba(244,248,247,0) 0%,${C.bg} 22%,${C.bg} 100%)`}}/>
+          <div style={{display:'flex',gap:9}}>
+            <div style={{flex:1}}>
+              <Btn variant={program.tier==='high'?'energy':'primary'} size="lg" fullWidth onClick={onStart}>{resume?`Reprendre · ${program.duration} min`:`Commencer · ${program.duration} min`}</Btn>
+            </div>
+            {!resume && (
+              <button onClick={onShort} aria-pressed={!!program.short} aria-label="Version courte de 10 minutes" title={program.short?'Revenir à la séance complète':'Version courte (~10 min)'} style={{flex:'0 0 auto',width:64,minHeight:56,borderRadius:9999,background:program.short?'rgba(47,191,161,0.16)':C.card,border:`1.5px solid ${program.short?'rgba(47,191,161,0.5)':C.line2}`,boxShadow:C.sh,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1,touchAction:'manipulation',transition:'all 160ms ease'}}>
+                <span style={{fontFamily:"'DM Mono',monospace",fontSize:16,fontWeight:600,color:C.tealDk,lineHeight:1}}>10</span>
+                <span style={{fontSize:9,color:program.short?C.tealDk:C.muted,letterSpacing:'0.04em',fontWeight:program.short?700:400}}>MIN</span>
+              </button>
+            )}
+          </div>
+        </div>
 
         {sheet==='goals' && (
           <div onClick={()=>setSheet(null)} style={{position:'absolute',inset:0,zIndex:260,background:'rgba(14,81,74,0.34)',backdropFilter:'blur(3px)',WebkitBackdropFilter:'blur(3px)',display:'flex',alignItems:'flex-end'}}>
@@ -2002,7 +2217,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const done=hist.filter(e=>e.date===today);
     const rec=done[done.length-1]||{};
     const week=window.__weekDoneCount?window.__weekDoneCount():done.length;
-    const goal=4;
+    const goal=window.__weeklyGoal();
     const dnum=parseInt(today.replace(/-/g,''),10)||0;
     const phrase=__DONE_PHRASES[dnum%__DONE_PHRASES.length];
     // bienfaits : d'abord les axes travaillés (targets), sinon déduits des zones
@@ -2102,6 +2317,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     /* Garde l'écran allumé pendant toute la séance (maintiens, mains occupées). */
     React.useEffect(()=>keepScreenAwake(),[]);
     const fired=React.useRef(false);
+    const skippedRef=React.useRef(new Set());          // exercices passés : validés « faits » nulle part
+    const [eased,setEased]=React.useState({});         // allègements du jour, par exercice
     const restKindRef=React.useRef('set');   // 'set' (entre séries) | 'next' (entre exercices)
     const [flagOpen,setFlagOpen]=React.useState(false);
     const [infoOpen,setInfoOpen]=React.useState(false);
@@ -2112,7 +2329,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [rpe,setRpe]=React.useState(null);   // effort ressenti 1-10 (autorégulation)
     React.useEffect(()=>{ setRpe(null); },[exIdx]);
 
-    const ex=exs[exIdx];
+    const exRaw=exs[exIdx];
+    const ex=window.__easeExercise(exRaw, (exRaw&&eased[exRaw.id])||0);
     const sets=ex.sets||1;
     const isEach = !ex.weighted && ex.side==='each';
     const fem = /jambe|main/.test(ex.sideLabel||'');
@@ -2148,6 +2366,34 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
              : `Effort ${v}/10 — bonne zone, je garde le cap et fais progresser en douceur.`);
       setTimeout(()=>setToast(null),3400);
     }
+    /* Passer un exercice : il faut une porte de sortie propre quand un mouvement ne passe
+       pas aujourd'hui (spasticité, douleur, vertige). On le marque « sauté » — donc PAS
+       validé, et pas de palier gagné — et on enchaîne. Sauter n'abandonne pas la séance. */
+    function skipExercise(){
+      setRunning(false); setFlagOpen(false);
+      if(!ex.weighted && (ex.phase||'main')==='main' && !loggedRef.current.has(ex.id)){
+        loggedRef.current.add(ex.id);
+        outcomeRef.current[ex.id]='skip';
+        window.__logSession(ex.id,'hard',ex.area);   // sauté = trop dur aujourd'hui : on allègera
+      }
+      skippedRef.current.add(exIdx);
+      setDone(d=>{const n=new Set(d);n.add(exIdx);return n;});
+      setSide(firstSide);
+      setToast('Exercice passé — je l’allègerai la prochaine fois.');
+      setTimeout(()=>setToast(null),3000);
+      if(exIdx<exs.length-1){ setExIdx(i=>i+1); setSetNum(1); setPhase('work'); }
+      else { window.__clearSessionState(); setAllDone(true); }
+    }
+    /* Version plus facile, tout de suite : on redescend d'un cran la dose du jour
+       (séries, durée, répétitions) sans toucher au niveau acquis. */
+    function easierNow(){
+      setFlagOpen(false); setRunning(false);
+      setEased(e=>{const n={...e}; n[ex.id]=(n[ex.id]||0)+1; return n;});
+      window.__logSession(ex.id,'hard',ex.area);
+      outcomeRef.current[ex.id]='hard';
+      setToast('Version allégée — et je m’en souviendrai pour la suite.');
+      setTimeout(()=>setToast(null),3200);
+    }
     function flagExercise(reason){
       const next={...flagged,[ex.id]:{reason}};
       setFlagged(next);
@@ -2163,7 +2409,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       fired.current=false;
       if(phase==='rest'){ const rs=restKindRef.current==='side'?7:restSec; setRemaining(rs); setRunning(true); }
       else { setWarmStep(0); setRemaining(isStepped ? stepDur : (ex.workSec||0)); setRunning(autoChain && chainRef.current && ex.area==='cardio' && (ex.workSec||0)>0); }
-    },[exIdx,setNum,phase]);
+    },[exIdx,setNum,phase,eased]);   // `eased` : alléger relance le minuteur sur la nouvelle dose
     // pré-remplir poids/reps depuis la dernière séance (musculation salle)
     React.useEffect(()=>{ const e=exs[exIdx]; if(e&&e.weighted){ const last=window.__lastStrength(e.id); setLoadW(last?last.weight:10); setLoadR(last?last.reps:(e.reps||8)); } },[exIdx]);
 
@@ -2232,7 +2478,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       window.__logSessionDone({id:program.sessionId||(program.custom?'custom':program.gym?'gym'+program.gymId:'ia'), region:program.region||'', intent:program.intent||'', dorsi:(program.exercises||[]).some(e=>/^dorsi/.test(e.id||'')), title:program.title||'Séance', duration:program.duration||0, areas:__areas, forme:__forme, targets:program.targets||[], muscles:program.muscles||[], load:program.load||'moyen'});
       const streak=window.__streak();
       const week=window.__weekDoneCount();
-      const goal=4;
+      const goal=window.__weeklyGoal();
       const gains=exs.filter(e=>e.prog==='up').length;
       const levelUps=Object.keys(outcomeRef.current).filter(id=>outcomeRef.current[id]==='easy').length;
       const milestones=[];
@@ -2245,7 +2491,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       if(levelUps>0) milestones.push({icon:'star', t:`${levelUps} niveau${levelUps>1?'x':''} gagné${levelUps>1?'s':''}`, d:'« trop facile » → je corse la prochaine fois.'});
       setSummary({streak,week,goal,milestones,grew:streak>before});
     },[allDone]);
-    if(allDone){ const s=summary||{streak:1,week:1,goal:4,milestones:[],grew:false};
+    if(allDone){ const s=summary||{streak:1,week:1,goal:window.__weeklyGoal(),milestones:[],grew:false};
      const Ico=({k})=>k==='flame'?<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4 4 5 4 9a4 4 0 0 1-8 0c0-1 .5-2 1-3 .5 2 2 2 2 2 1-2-1-4 1-8z"/></svg>
        :k==='target'?<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
        :k==='trend'?<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
@@ -2313,10 +2559,11 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 {sets>1&&<span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.muted}}>Série {setNum}/{sets}</span>}
               </div>
               <h2 style={{fontFamily:'Georgia,serif',fontSize:26,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',lineHeight:1.15,marginBottom:6,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{ex.name}</h2>
-              {(ex.levelNote||ex.tempo||ex.mod)&&(
-                <div style={{display:'flex',gap:6,marginBottom:10,overflow:'hidden'}}>
+              {(ex.levelNote||ex.tempo||ex.mod||ex.eased>0)&&(
+                <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
                   {ex.levelNote&&<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:99,padding:'3px 9px'}}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>{ex.levelNote}</span>}
                   {(ex.tempo||ex.mod)&&<span style={{fontSize:11,fontWeight:600,color:C.orange,background:'rgba(224,138,11,0.1)',border:'1px solid rgba(224,138,11,0.26)',borderRadius:99,padding:'3px 9px'}}>{ex.tempo||ex.mod}</span>}
+                  {ex.eased>0&&<span style={{fontSize:11,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:99,padding:'3px 9px',whiteSpace:'nowrap'}}>allégé ×{ex.eased}</span>}
                 </div>
               )}
               {/* set dots */}
@@ -2390,17 +2637,21 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
                   Infos
                 </button>
-                {!ex.weighted && (ex.phase||'main')==='main' && (isFlagged ? (
-                  <div style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:7,fontSize:12.5,color:C.tealDk,fontWeight:600,background:'rgba(47,191,161,0.10)',border:`1px solid rgba(47,191,161,0.28)`,borderRadius:13}}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    Signalé
-                  </div>
-                ) : (
-                  <button onClick={()=>setFlagOpen(true)} style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.bg,border:`1px solid ${C.line2}`,borderRadius:13,cursor:'pointer',color:C.body,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-                    Gêne ou douleur ?
+                {/* Toujours une porte de sortie : la feuille de gêne pour les exercices
+                    principaux (elle contient aussi « alléger » et « passer »), et un simple
+                    « Passer » pour l'échauffement / le retour au calme. */}
+                {(!ex.weighted && (ex.phase||'main')==='main') ? (
+                  <button onClick={()=>setFlagOpen(true)} style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:isFlagged?'rgba(47,191,161,0.10)':C.bg,border:`1px solid ${isFlagged?'rgba(47,191,161,0.28)':C.line2}`,borderRadius:13,cursor:'pointer',color:isFlagged?C.tealDk:C.body,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
+                    {isFlagged
+                      ? <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Signalé</>
+                      : <><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Gêne ou douleur ?</>}
                   </button>
-                ))}
+                ) : (
+                  <button onClick={skipExercise} style={{flex:1,minHeight:46,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:C.bg,border:`1px solid ${C.line2}`,borderRadius:13,cursor:'pointer',color:C.body,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",whiteSpace:'nowrap',touchAction:'manipulation'}}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.body} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                    Passer
+                  </button>
+                )}
               </div>
             </>) : (()=>{ const isNextRest=restKindRef.current==='next'; const isSideRest=restKindRef.current==='side'; const nextEx=exs[exIdx+1]; return (<>
               <div style={{margin:'auto 0',width:'100%'}}>
@@ -2450,6 +2701,20 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                   </button>
                 ))}
+              </div>
+              {/* Sortie immédiate : alléger tout de suite, ou passer. Sans ça, un exercice
+                  qui ne passe pas aujourd'hui bloque toute la séance. */}
+              <div style={{height:1,background:C.line,margin:'18px 0 14px'}}/>
+              <p style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:10}}>Et pour aujourd'hui ?</p>
+              <div style={{display:'flex',gap:9}}>
+                <button onClick={easierNow} style={{flex:1,minHeight:50,borderRadius:13,background:C.tint,border:'1px solid rgba(47,191,161,0.3)',cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/></svg>
+                  Version plus facile
+                </button>
+                <button onClick={skipExercise} style={{flex:1,minHeight:50,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.body} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                  Passer
+                </button>
               </div>
               <button onClick={()=>setFlagOpen(false)} style={{display:'block',margin:'16px auto 0',background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
             </div>
@@ -2951,11 +3216,155 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <div>Série en cours : <b>{R.adherence.streak} j</b> <span style={{color:'#8a96a7'}}>(record {R.adherence.best} j)</span></div>
           </div>
 
+          {(()=>{ const S=window.__symptomStats(90); if(!S.entries) return null;
+            const LBL=Object.fromEntries(window.__SYMPTOMS);
+            const flares=S.log.filter(e=>e.flare);
+            const notes=S.log.filter(e=>e.note).slice(-6);
+            return (<>
+              <div style={sec}>Symptômes rapportés (90 jours)</div>
+              <div style={{fontSize:12,lineHeight:1.7,marginBottom:notes.length?8:0}}>
+                <div style={{marginBottom:4}}>Jours renseignés : <b>{S.entries}</b>{flares.length?<> · épisodes signalés comme poussée par le patient : <b>{flares.length}</b> ({flares.map(f=>fmtDate(f.date)).join(', ')})</>:''}</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:'2px 18px'}}>
+                  {S.top.slice(0,6).map(t=><div key={t.key}>{LBL[t.key]||t.key} : <b>{t.n} j</b></div>)}
+                </div>
+              </div>
+              {notes.length>0 && (
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr><th style={{...th,width:110}}>Date</th><th style={th}>Note du patient</th></tr></thead>
+                  <tbody>{notes.map((n,i)=><tr key={i}><td style={td}>{fmtDate(n.date)}</td><td style={td}>{n.note}</td></tr>)}</tbody>
+                </table>
+              )}
+            </>);
+          })()}
+
           <div style={{marginTop:22,paddingTop:10,borderTop:'1px solid #dbe6e0',fontSize:9.5,color:'#8a96a7',lineHeight:1.5}}>
-            Document généré par Élan à partir des données saisies par l’utilisateur (auto-évaluations et tests à domicile). Il constitue une aide au suivi et ne remplace pas un examen clinique. Les principes appliqués s’inspirent de l’activité physique adaptée en SEP (priorité aux membres inférieurs, gestion de la fatigue et de la chaleur, progression prudente).
+            Document généré par Élan à partir des données saisies par l’utilisateur (auto-évaluations, tests à domicile et symptômes auto-rapportés — non validés cliniquement). Il constitue une aide au suivi et ne remplace pas un examen clinique. Les principes appliqués s’inspirent de l’activité physique adaptée en SEP (priorité aux membres inférieurs, gestion de la fatigue et de la chaleur, progression prudente).
           </div>
         </div>
         </div>
+      </div>
+    );
+  }
+
+  /* Rappel quotidien — activation, heure, et test. On est explicite sur la limite technique :
+     sans serveur de push, la notification dépend du navigateur (fiable app installée sur
+     Android, rattrapée à l'ouverture sinon). Mieux vaut le dire que de laisser croire. */
+  function ReminderSettings(){
+    const [cfg,setCfg]=React.useState(()=>window.__reminderCfg());
+    const [perm,setPerm]=React.useState(()=>window.__notifState());
+    const [toast,setToast]=React.useState(null);
+    const say=m=>{ setToast(m); setTimeout(()=>setToast(null),3200); };
+    const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
+    async function toggle(){
+      if(cfg.on){ setCfg(window.__saveReminder({on:false})); return; }
+      let p=window.__notifState();
+      if(p==='unsupported'){ say('Ton navigateur ne gère pas les notifications.'); return; }
+      if(p==='default'){ p=await window.__askNotifPermission(); setPerm(p); }
+      if(p!=='granted'){ setPerm(p); say(p==='denied'?'Notifications refusées — réactive-les dans les réglages du navigateur.':'Autorisation non accordée.'); return; }
+      setCfg(window.__saveReminder({on:true}));
+      say('Rappel activé.');
+    }
+    function bump(field,delta,max){ const v=((cfg[field]+delta)%max+max)%max; setCfg(window.__saveReminder({[field]:v})); }
+    function test(){
+      if(window.__notifState()!=='granted'){ say('Active d’abord le rappel.'); return; }
+      try{ navigator.serviceWorker.ready.then(r=>{ if(r.active) r.active.postMessage({type:'elan-test'}); }); say('Notification de test envoyée.'); }catch(e){ say('Test impossible.'); }
+    }
+    const Num=({v,onUp,onDown,lab})=>(
+      <div style={{textAlign:'center'}}>
+        <button onClick={onUp} aria-label={'Augmenter '+lab} style={{width:44,height:34,borderRadius:10,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:15,cursor:'pointer',padding:0,lineHeight:1}}>▲</button>
+        <div style={{fontFamily:"'DM Mono',monospace",fontSize:26,fontWeight:600,color:C.ink,margin:'4px 0'}}>{String(v).padStart(2,'0')}</div>
+        <button onClick={onDown} aria-label={'Diminuer '+lab} style={{width:44,height:34,borderRadius:10,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:15,cursor:'pointer',padding:0,lineHeight:1}}>▼</button>
+      </div>
+    );
+    return (
+      <div style={card}>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:14,fontWeight:600,color:C.ink}}>Me rappeler ma séance</div>
+            <div style={{fontSize:12.5,color:C.muted,lineHeight:1.45,marginTop:3}}>Une notification par jour, seulement si tu n’as pas encore fait ta séance.</div>
+          </div>
+          <button onClick={toggle} role="switch" aria-checked={cfg.on} aria-label="Activer le rappel quotidien" style={{flexShrink:0,width:54,height:32,borderRadius:99,border:'none',cursor:'pointer',padding:3,background:cfg.on?C.teal:'rgba(14,81,74,0.16)',transition:'background 200ms ease'}}>
+            <span style={{display:'block',width:26,height:26,borderRadius:'50%',background:'#fff',boxShadow:'0 2px 6px rgba(14,81,74,0.24)',transform:cfg.on?'translateX(22px)':'translateX(0)',transition:'transform 200ms cubic-bezier(0.34,1.56,0.64,1)'}}/>
+          </button>
+        </div>
+        {cfg.on && (<>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,margin:'18px 0 4px'}}>
+            <Num v={cfg.hour} lab="heures" onUp={()=>bump('hour',1,24)} onDown={()=>bump('hour',-1,24)}/>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:24,color:C.muted,paddingBottom:4}}>:</span>
+            <Num v={cfg.min} lab="minutes" onUp={()=>bump('min',15,60)} onDown={()=>bump('min',-15,60)}/>
+          </div>
+          <button onClick={test} style={{width:'100%',minHeight:44,marginTop:14,borderRadius:12,background:C.bg,border:`1px solid ${C.line}`,cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>Envoyer une notification de test</button>
+          <p style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:12}}>Le rappel est <b>local</b> : Élan n’a pas de serveur et n’envoie rien sur Internet. Il est fiable quand l’app est installée sur ton écran d’accueil ; sinon, il est rattrapé à ta prochaine ouverture.</p>
+        </>)}
+        {perm==='denied' && <p style={{fontSize:12,color:C.orange,lineHeight:1.45,marginTop:10}}>Les notifications sont bloquées pour ce site. Autorise-les dans les réglages de ton navigateur pour activer le rappel.</p>}
+        {toast && <div style={{marginTop:12,fontSize:12.5,color:C.tealDk,background:'rgba(47,191,161,0.10)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:11,padding:'9px 12px'}}>{toast}</div>}
+      </div>
+    );
+  }
+
+  /* Sauvegarde / restauration — export d'un fichier JSON et réimport.
+     Les données ne vivent que dans ce navigateur : c'est la seule protection contre
+     un cache vidé ou un changement de téléphone. */
+  function BackupSettings(){
+    const [msg,setMsg]=React.useState(null);
+    const [pending,setPending]=React.useState(null);   // contenu en attente de confirmation
+    const fileRef=React.useRef(null);
+    const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
+    const say=(kind,text)=>{ setMsg({kind,text}); if(kind!=='err') setTimeout(()=>setMsg(null),4200); };
+    const stats=(()=>{ const d=window.__exportData(); const h=window.__sessHistory(); return {keys:d.keys, sessions:h.length}; })();
+    function exportNow(){
+      try{
+        const blob=new Blob([JSON.stringify(window.__exportData(),null,2)],{type:'application/json'});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a'); a.href=url; a.download=window.__exportFilename();
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),4000);
+        say('ok','Sauvegarde téléchargée. Range-la ailleurs que sur ce téléphone.');
+      }catch(e){ say('err','Export impossible sur ce navigateur.'); }
+    }
+    function pickFile(e){
+      const f=e.target.files&&e.target.files[0]; e.target.value='';
+      if(!f) return;
+      const rd=new FileReader();
+      rd.onload=()=>{ const v=window.__validateImport(rd.result);
+        if(!v.ok){ say('err',v.error); return; }
+        setMsg(null); setPending({raw:rd.result,at:v.exportedAt,n:v.entries.length}); };
+      rd.onerror=()=>say('err','Lecture du fichier impossible.');
+      rd.readAsText(f);
+    }
+    function doImport(replace){
+      const r=window.__importData(pending.raw,replace);
+      setPending(null);
+      if(!r.ok){ say('err',r.error); return; }
+      say('ok',`${r.keys} éléments restaurés. Rechargement…`);
+      setTimeout(()=>window.location.reload(),900);
+    }
+    return (
+      <div style={card}>
+        <div style={{fontSize:13,color:C.body,lineHeight:1.5,marginBottom:14}}>Tes données ne quittent jamais cet appareil — donc rien ne les protège si tu vides le cache, changes de téléphone ou réinstalles. Exporte une sauvegarde de temps en temps.</div>
+        <div style={{display:'flex',alignItems:'center',gap:10,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'10px 12px',marginBottom:14}}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>
+          <span style={{fontSize:12.5,color:C.body}}><b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.sessions}</b> séances · <b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.keys}</b> jeux de données</span>
+        </div>
+        <button onClick={exportNow} style={{width:'100%',minHeight:48,borderRadius:13,background:`linear-gradient(135deg,${C.teal},${C.tealDk})`,border:'none',cursor:'pointer',color:'#fff',fontSize:14.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9,boxShadow:'0 6px 18px rgba(47,191,161,0.3)'}}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Exporter ma sauvegarde
+        </button>
+        <button onClick={()=>fileRef.current&&fileRef.current.click()} style={{width:'100%',minHeight:46,marginTop:10,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9}}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Restaurer une sauvegarde
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{display:'none'}}/>
+        {pending && (
+          <div style={{marginTop:14,background:C.tint,border:'1px solid rgba(47,191,161,0.3)',borderRadius:13,padding:'13px 14px'}}>
+            <div style={{fontSize:13,fontWeight:600,color:C.ink,marginBottom:4}}>Sauvegarde reconnue</div>
+            <div style={{fontSize:12.5,color:C.body,lineHeight:1.45,marginBottom:12}}>{pending.n} jeux de données{pending.at?` · exportée le ${new Date(pending.at).toLocaleDateString('fr-FR')}`:''}. Comment veux-tu la restaurer ?</div>
+            <button onClick={()=>doImport(true)} style={{width:'100%',minHeight:44,borderRadius:11,background:C.card,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.ink,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",marginBottom:8}}>Remplacer tout ce qui est sur cet appareil</button>
+            <button onClick={()=>doImport(false)} style={{width:'100%',minHeight:44,borderRadius:11,background:C.card,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.ink,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>Fusionner avec mes données actuelles</button>
+            <button onClick={()=>setPending(null)} style={{display:'block',margin:'10px auto 0',background:'none',border:'none',color:C.muted,fontSize:12.5,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+          </div>
+        )}
+        {msg && <div style={{marginTop:12,fontSize:12.5,lineHeight:1.45,color:msg.kind==='err'?'#C2410C':C.tealDk,background:msg.kind==='err'?'rgba(194,65,12,0.08)':'rgba(47,191,161,0.10)',border:`1px solid ${msg.kind==='err'?'rgba(194,65,12,0.25)':'rgba(47,191,161,0.28)'}`,borderRadius:11,padding:'9px 12px'}}>{msg.text}</div>}
       </div>
     );
   }
@@ -2973,6 +3382,10 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [gymDays,setGymDays]=React.useState(()=>{ const o={}; Object.keys(gymCfg0.gymDays||{}).forEach(k=>{o[k]=[...(gymCfg0.gymDays[k]||[])];}); return o; });
     const [perim,setPerim]=React.useState(window.__walkPerimeter());
     const setPerimSave=v=>{ const nv=Math.max(4,Math.min(60,v)); setPerim(nv); window.__saveSettings({walkPerimeter:nv}); };
+    const [wGoal,setWGoal]=React.useState(window.__weeklyGoal());
+    const setGoalSave=v=>{ const nv=Math.max(2,Math.min(7,v)); setWGoal(nv); window.__saveSettings({weeklyGoal:nv}); };
+    const [tDays,setTDays]=React.useState(window.__trainDays());
+    const toggleDay=n=>{ const next=tDays.includes(n)?tDays.filter(x=>x!==n):[...tDays,n].sort(); setTDays(next); window.__saveSettings({trainDays:next}); };
     const SY=[['fatigue','Fatigue'],['equilibre','Équilibre / vertiges'],['spasticite','Raideur / spasticité'],['sensitif','Troubles sensitifs'],['force','Faiblesse musculaire']];
     const GO=['Marcher plus longtemps','Garder l\'équilibre','Me renforcer','Réduire la fatigue','Gagner en souplesse'];
     const DAYS=[[1,'Lun'],[2,'Mar'],[3,'Mer'],[4,'Jeu'],[5,'Ven'],[6,'Sam'],[0,'Dim']];
@@ -2997,6 +3410,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           </div>
           <h2 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',margin:'0 0 6px'}}>Profil &amp; réglages</h2>
           <p style={{fontSize:13,color:C.muted,lineHeight:1.5}}>Ces réglages guident le choix de tes séances. Tes données restent sur cet appareil.</p>
+
+          <div style={sec}>Rappel quotidien</div>
+          <ReminderSettings/>
 
           <div style={sec}>Suivi médical</div>
           <button onClick={()=>setShowReport(true)} style={{width:'100%',display:'flex',alignItems:'center',gap:12,background:C.card,border:`1px solid ${C.line}`,boxShadow:C.sh,borderRadius:16,padding:'15px 16px',cursor:'pointer',textAlign:'left',fontFamily:"'DM Sans',sans-serif"}}>
@@ -3024,6 +3440,25 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <div style={{flex:1,textAlign:'center'}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:26,fontWeight:600,color:C.ink}}>{perim}</span><span style={{fontSize:12.5,color:C.muted,marginLeft:6}}>min</span></div>
               <button onClick={()=>setPerimSave(perim+1)} style={{width:46,height:46,borderRadius:13,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:22,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",lineHeight:1,padding:0}}>+</button>
             </div>
+          </div>
+
+          <div style={sec}>Mon rythme</div>
+          <div style={card}>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,marginBottom:4}}>Objectif hebdomadaire</div>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.45,marginBottom:10}}>Combien de jours actifs par semaine tu vises. C’est sur ce total qu’Élan juge ta semaine — pas sur des jours précis.</div>
+            <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
+              <button onClick={()=>setGoalSave(wGoal-1)} aria-label="Diminuer l’objectif" style={{width:46,height:46,borderRadius:13,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:22,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",lineHeight:1,padding:0}}>−</button>
+              <div style={{flex:1,textAlign:'center'}}><span style={{fontFamily:"'DM Mono',monospace",fontSize:26,fontWeight:600,color:C.ink}}>{wGoal}</span><span style={{fontSize:12.5,color:C.muted,marginLeft:6}}>jours / semaine</span></div>
+              <button onClick={()=>setGoalSave(wGoal+1)} aria-label="Augmenter l’objectif" style={{width:46,height:46,borderRadius:13,border:`1px solid ${C.line}`,background:C.bg,color:C.tealDk,fontSize:22,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",lineHeight:1,padding:0}}>+</button>
+            </div>
+            <div style={{fontSize:13,color:C.body,fontWeight:600,marginBottom:4}}>Mes jours habituels <span style={{fontWeight:400,color:C.muted}}>(facultatif)</span></div>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.45,marginBottom:10}}>Si tu t’entraînes plutôt certains jours, coche-les : le calendrier les marquera comme prévus. Sans rien cocher, aucun jour n’est jamais compté comme « manqué ».</div>
+            <div style={{display:'flex',gap:5}}>
+              {[[1,'L'],[2,'M'],[3,'M'],[4,'J'],[5,'V'],[6,'S'],[0,'D']].map(([n,lab])=>{ const on=tDays.includes(n); return (
+                <button key={n} onClick={()=>toggleDay(n)} aria-pressed={on} aria-label={['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'][n]} style={{flex:1,minHeight:44,borderRadius:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:700,background:on?'rgba(47,191,161,0.16)':C.bg,color:on?C.tealDk:C.muted,border:`1px solid ${on?'rgba(47,191,161,0.45)':C.line}`,transition:'all 150ms ease',padding:0}}>{lab}</button>
+              );})}
+            </div>
+            {tDays.length>0 && <button onClick={()=>{ setTDays([]); window.__saveSettings({trainDays:[]}); }} style={{display:'block',margin:'12px auto 0',background:'none',border:'none',color:C.muted,fontSize:12.5,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",textDecoration:'underline'}}>Ne pas fixer de jours</button>}
           </div>
 
           <div style={sec}>Mes priorités</div>
@@ -3077,6 +3512,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               : <button onClick={()=>setConfirm('baseline')} style={{marginTop:14,width:'100%',background:C.tint,border:`1px solid ${C.line}`,color:C.tealDk,borderRadius:11,padding:'11px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Refaire le test d'entrée</button>}
           </div>
 
+          <div style={sec}>Sauvegarde</div>
+          <BackupSettings/>
+
           <div style={sec}>Zone de danger</div>
           <div style={{...card,borderColor:'rgba(194,65,12,0.25)'}}>
             <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
@@ -3101,6 +3539,65 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
 
+  /* Journal des symptômes — une ligne par jour, facultative.
+     Objectif : donner une trace datée à montrer en consultation. Élan n'interprète pas
+     et ne diagnostique pas ; en cas de signe durable, il renvoie vers le médecin. */
+  function SymptomJournal(){
+    const today=window.__today();
+    const [open,setOpen]=React.useState(false);
+    const [entry,setEntry]=React.useState(()=>{ const e=window.__symptomDay(today); return {syms:(e&&e.syms)||[],flare:!!(e&&e.flare),note:(e&&e.note)||''}; });
+    const [saved,setSaved]=React.useState(()=>!!window.__symptomDay(today));
+    const [tick,setTick]=React.useState(0);
+    const stats=React.useMemo(()=>window.__symptomStats(30),[tick]);
+    const LBL=Object.fromEntries(window.__SYMPTOMS);
+    const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:20,boxShadow:C.sh};
+    function toggle(k){ setEntry(e=>({...e,syms:e.syms.includes(k)?e.syms.filter(x=>x!==k):[...e.syms,k]})); }
+    function save(){ window.__logSymptomDay({date:today,...entry}); setSaved(entry.syms.length>0||entry.flare||!!entry.note); setOpen(false); setTick(t=>t+1); }
+    return (
+      <div style={{...card,padding:'16px 16px 14px',marginBottom:20}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:open?14:0}}>
+          <div style={{width:34,height:34,borderRadius:10,background:C.bg,border:`1px solid ${C.line}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h6"/></svg>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13.5,fontWeight:600,color:C.ink}}>Journal du jour</div>
+            <div style={{fontSize:12,color:C.muted,marginTop:1}}>{saved?'Noté pour aujourd’hui — touche pour modifier.':'Comment tu te sens ? (facultatif)'}</div>
+          </div>
+          <button onClick={()=>setOpen(o=>!o)} aria-expanded={open} style={{flexShrink:0,minHeight:38,padding:'0 14px',borderRadius:11,background:saved?C.bg:C.tint,border:`1px solid ${saved?C.line:'rgba(47,191,161,0.3)'}`,cursor:'pointer',color:C.tealDk,fontSize:12.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>{open?'Fermer':(saved?'Modifier':'Noter')}</button>
+        </div>
+        {open && (<>
+          <div style={{display:'flex',flexWrap:'wrap',gap:7,marginBottom:14}}>
+            {window.__SYMPTOMS.map(([k,lab])=>{ const on=entry.syms.includes(k); return (
+              <button key={k} onClick={()=>toggle(k)} aria-pressed={on} style={{fontFamily:"'DM Sans',sans-serif",fontSize:12.5,fontWeight:500,minHeight:38,padding:'0 13px',borderRadius:99,cursor:'pointer',background:on?'rgba(47,191,161,0.14)':C.bg,color:on?C.tealDk:C.body,border:`1px solid ${on?'rgba(47,191,161,0.4)':C.line}`,transition:'all 150ms ease'}}>{lab}</button>
+            );})}
+          </div>
+          <button onClick={()=>setEntry(e=>({...e,flare:!e.flare}))} aria-pressed={entry.flare} style={{width:'100%',minHeight:46,borderRadius:13,marginBottom:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:13.5,fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center',gap:8,background:entry.flare?'rgba(194,65,12,0.09)':C.bg,border:`1px solid ${entry.flare?'rgba(194,65,12,0.32)':C.line}`,color:entry.flare?'#C2410C':C.body}}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={entry.flare?'#C2410C':C.muted} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4 4 5 4 9a4 4 0 0 1-8 0c0-1 .5-2 1-3 .5 2 2 2 2 2 1-2-1-4 1-8z"/></svg>
+            {entry.flare?'Journée marquée comme poussée':'Marquer comme une poussée'}
+          </button>
+          <textarea value={entry.note} onChange={e=>setEntry(v=>({...v,note:e.target.value.slice(0,400)}))} rows={3} placeholder="Une note pour toi ou pour ton médecin (facultatif)…"
+            style={{width:'100%',boxSizing:'border-box',border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontFamily:"'DM Sans',sans-serif",fontSize:13.5,color:C.ink,background:C.bg,outline:'none',resize:'vertical',lineHeight:1.5}}/>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:12,gap:10}}>
+            <span style={{fontSize:11,color:C.muted}}>{entry.note.length}/400</span>
+            <button onClick={save} style={{minHeight:44,padding:'0 22px',borderRadius:12,background:`linear-gradient(135deg,${C.teal},${C.tealDk})`,border:'none',cursor:'pointer',color:'#fff',fontSize:14,fontWeight:600,fontFamily:"'DM Sans',sans-serif",boxShadow:'0 4px 14px rgba(47,191,161,0.28)'}}>Enregistrer</button>
+          </div>
+          {entry.flare && <p style={{fontSize:12,color:'#9A5B12',lineHeight:1.45,marginTop:12,background:'rgba(224,138,11,0.09)',border:'1px solid rgba(224,138,11,0.24)',borderRadius:11,padding:'9px 11px'}}>Élan note la date, rien de plus — il ne sait pas juger une poussée. Si les symptômes durent plus de 24-48 h ou s’aggravent, appelle ton neurologue.</p>}
+        </>)}
+        {!open && stats.entries>0 && (
+          <div style={{marginTop:14,paddingTop:13,borderTop:`1px solid ${C.line}`}}>
+            <div style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:9}}>30 derniers jours · {stats.entries} note{stats.entries>1?'s':''}</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+              {stats.top.slice(0,4).map(t=>(
+                <span key={t.key} style={{fontSize:12,color:C.body,background:C.bg,border:`1px solid ${C.line}`,borderRadius:99,padding:'5px 11px'}}>{LBL[t.key]||t.key} <b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{t.n}j</b></span>
+              ))}
+              {stats.flares>0 && <span style={{fontSize:12,color:'#C2410C',background:'rgba(194,65,12,0.08)',border:'1px solid rgba(194,65,12,0.25)',borderRadius:99,padding:'5px 11px'}}>{stats.flares} poussée{stats.flares>1?'s':''}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function ProgressScreen({ onOpenBilan, bilanDone, onRedoBaseline, onResetAll }) {
     const TESTS=window.ED.tests;
     const [tab,setTab]=React.useState('reg');
@@ -3121,7 +3618,9 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       return {...tt, allPts, pts, series, now, d:(now??0)-(prev??0)};
     });
     const fhFirst=formeHistory[0], fhLast=formeHistory[formeHistory.length-1];
-    const pctForme=(formeHistory.length>1&&fhFirst)?Math.round((fhLast-fhFirst)/fhFirst*100):0;
+    /* La forme est un indice sur 100 : un écart s'exprime en POINTS, pas en pourcentage
+       (30 → 57 n'est pas « +90 % », c'est +27 points). */
+    const ptsForme=(formeHistory.length>1)?(fhLast-fhFirst):0;
     const goals=window.__longTermGoals();
     const streak=window.__streak(), weekCount=window.__weekDoneCount();
     const weekStreak=window.__weekStreak(), record=window.__bestWeekStreak();
@@ -3154,9 +3653,13 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
         {tab==='reg'&&(<>
           <div style={{display:'flex',alignItems:'center',gap:18,marginBottom:20}}>
-            <RingChart value={weekCount} max={Math.max(4,weekCount)} size={124}/>
+            <RingChart value={weekCount} max={Math.max(window.__weeklyGoal(),weekCount)} size={124}/>
             <div style={{flex:1,display:'flex',flexDirection:'column',gap:12}}>
-              <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.orange,lineHeight:1}}>{weekStreak}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>semaine{weekStreak>1?'s':''} réussie{weekStreak>1?'s':''} de suite</div></div>
+              {/* Un « 0 » en gros et en orange se lit comme un échec : tant qu'aucune semaine
+                  n'est réussie, on affiche l'encouragement plutôt que le compteur vide. */}
+              {weekStreak>0
+                ? <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.orange,lineHeight:1}}>{weekStreak}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>semaine{weekStreak>1?'s':''} réussie{weekStreak>1?'s':''} de suite</div></div>
+                : <div><div style={{fontSize:13,color:C.body,fontWeight:600,lineHeight:1.3}}>{weekCount>=window.__weeklyGoal()?'Semaine réussie ✓':`Plus que ${window.__weeklyGoal()-weekCount} jour${window.__weeklyGoal()-weekCount>1?'s':''}`}</div><div style={{fontSize:12,color:C.muted,marginTop:2,lineHeight:1.35}}>{weekCount>=window.__weeklyGoal()?'enchaîne-la pour lancer ta série.':'pour réussir ta première semaine.'}</div></div>}
               <div><div style={{fontFamily:"'DM Mono',monospace",fontSize:28,fontWeight:500,color:C.teal,lineHeight:1}}>{monthCount}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>séances ce mois</div></div>
             </div>
           </div>
@@ -3164,7 +3667,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           {record>=2 && (
           <div style={{...card,padding:'14px 16px',marginBottom:20,display:'flex',alignItems:'center',gap:13,background:isRecord?'linear-gradient(135deg,#FFE9E0,#FFF4EF)':C.card,border:isRecord?'1px solid rgba(242,96,46,0.3)':`1px solid ${C.line}`}}>
             <div style={{width:42,height:42,borderRadius:12,background:isRecord?'rgba(242,96,46,0.16)':'rgba(224,138,11,0.12)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecord?C.orange:C.amber} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M5 9H3a2 2 0 0 1 0-4h2M19 9h2a2 2 0 0 0 0-4h-2"/></svg></div>
-            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>{isRecord?'Nouveau record de régularité !':'Record de régularité'}</div><div style={{fontSize:12.5,color:C.body,marginTop:1}}>{isRecord?`${weekStreak} semaine${weekStreak>1?'s':''} réussie${weekStreak>1?'s':''} d'affilée — ton meilleur enchaînement.`:`Ton record : ${record} semaine${record>1?'s':''} réussie${record>1?'s':''} de suite (≥ 4 jours actifs). Encore ${Math.max(1,record-weekStreak)} pour l'égaler !`}</div></div>
+            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>{isRecord?'Nouveau record de régularité !':'Record de régularité'}</div><div style={{fontSize:12.5,color:C.body,marginTop:1}}>{isRecord?`${weekStreak} semaine${weekStreak>1?'s':''} réussie${weekStreak>1?'s':''} d'affilée — ton meilleur enchaînement.`:`Ton record : ${record} semaine${record>1?'s':''} réussie${record>1?'s':''} de suite (≥ ${window.__weeklyGoal()} jours actifs). Encore ${Math.max(1,record-weekStreak)} pour l'égaler !`}</div></div>
           </div>)}
           {/* Analyse IA — seulement avec assez de check-in réels */}
           {formeHistory.length>=2 && (
@@ -3173,14 +3676,21 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg>
               <span style={{fontSize:12,fontWeight:600,color:C.tealDk,letterSpacing:'0.04em'}}>Analyse Élan · IA</span>
             </div>
-            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Sur tes <b style={{color:C.ink}}>{formeHistory.length}</b> derniers check-in, ta forme va de <b style={{color:C.ink}}>{fhFirst} → {fhLast}</b> ({pctForme>0?'+':''}{pctForme}%).{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> Et sur la chaise au mur, tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois.</>:''} {weekCount>=3?'Garde ce rythme — la régularité hebdo, c\'est ce qui fait progresser dans la SEP. Les jours de repos en font partie.':'Continue à enchaîner les séances pour voir la tendance se dessiner.'}</p>
+            <p style={{fontSize:13.5,color:C.body,lineHeight:1.55}}>Sur tes <b style={{color:C.ink}}>{formeHistory.length}</b> derniers check-in, ta forme va de <b style={{color:C.ink}}>{fhFirst} → {fhLast}</b> ({ptsForme>0?'+':''}{ptsForme} point{Math.abs(ptsForme)>1?'s':''}).{bilans.length>=2&&lastB.sts!=null&&prevB.sts!=null?<> Et sur la chaise au mur, tu passes de <b style={{color:C.ink}}>{prevB.sts} → {lastB.sts} s</b> de tenue en un mois.</>:''} {weekCount>=3?'Garde ce rythme — la régularité hebdo, c\'est ce qui fait progresser dans la SEP. Les jours de repos en font partie.':'Continue à enchaîner les séances pour voir la tendance se dessiner.'}</p>
           </div>)}
           {formeHistory.length>=2
             ? <div style={{...card,padding:'16px 14px 12px',marginBottom:20}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10,padding:'0 4px'}}><span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Forme du jour · {formeHistory.length} j</span>{pctForme>0&&<span style={{fontSize:12,color:C.tealDk,fontWeight:600}}>↗ en hausse</span>}</div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10,padding:'0 4px'}}><span style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase'}}>Forme du jour · {formeHistory.length} j</span>{ptsForme>0&&<span style={{fontSize:12,color:C.tealDk,fontWeight:600}}>↗ en hausse</span>}</div>
                 <LineChart data={formeHistory} color={C.teal} height={92} dotsEvery={Math.max(1,Math.round(formeHistory.length/5))}/>
+                {/* Repères d'échelle : sans min/max, une courbe sans axe ne dit rien. */}
+                <div style={{display:'flex',justifyContent:'space-between',padding:'6px 4px 0',fontSize:10.5,color:C.muted,fontFamily:"'DM Mono',monospace"}}>
+                  <span>min {Math.min.apply(null,formeHistory)}</span>
+                  <span>moy. {Math.round(formeHistory.reduce((s,x)=>s+x,0)/formeHistory.length)}</span>
+                  <span>max {Math.max.apply(null,formeHistory)}</span>
+                </div>
               </div>
             : <div style={{...emptyCard,marginBottom:20}}>Ta courbe de forme apparaîtra ici dès tes premiers check-in du jour.</div>}
+          <SymptomJournal/>
           <p style={{fontSize:11,color:C.muted,letterSpacing:'0.07em',textTransform:'uppercase',marginBottom:12}}>Récentes</p>
           {recentSessions.length
             ? <div style={{display:'flex',flexDirection:'column',gap:8}}>
@@ -3212,7 +3722,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           {!bilanDone&&(
             <div onClick={onOpenBilan} style={{cursor:'pointer',background:'linear-gradient(135deg,#FFE9E0,#FFF4EF)',border:'1px solid rgba(242,96,46,0.28)',borderRadius:18,padding:'16px',marginBottom:20,display:'flex',alignItems:'center',gap:12,boxShadow:C.sh}}>
               <div style={{width:42,height:42,borderRadius:12,background:'rgba(242,96,46,0.14)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
-              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink,textTransform:'capitalize'}}>Bilan de {window.ED.monthLabel}</div><div style={{fontSize:12,color:C.body,marginTop:1}}>À compléter — 1 fois par mois</div></div>
+              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.ink}}>Bilan {window.__deMois(window.ED.monthLabel)}</div><div style={{fontSize:12,color:C.body,marginTop:1}}>À compléter — 1 fois par mois</div></div>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           )}
@@ -3795,7 +4305,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
   const MONTHS=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
   const WD=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
   const DOW=['L','M','M','J','V','S','D'];
-  const SCHED=new Set([1,2,4,6]);               // jours d'entraînement habituels : lun, mar, jeu, sam (repères)
+  /* Jours d'entraînement : ceux que l'utilisateur a choisis dans ses réglages.
+     Par défaut la liste est VIDE — Élan raisonne en « N séances par semaine, quels que
+     soient les jours ». Sans jours fixes, aucun jour n'est marqué « manqué » : la semaine
+     se juge sur son total. Marquer un repos comme un échec contredirait le message que
+     l'app répète par ailleurs (le repos fait partie du programme). */
+  const schedSet=()=>new Set(window.__trainDays());
   function __dkey(dt){ return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); }
   /* Cache de l'historique réel (clé = date de séance) + date de démarrage (1er usage). */
   let __smCache=null,__smLen=-1,__smStart=null;
@@ -3809,7 +4324,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const d=dt.getDate(),dow=dt.getDay();
     const past=dt<today, isToday=dt.getTime()===today.getTime();
     const e=sessMap()[__dkey(dt)];
-    const sched=SCHED.has(dow);
+    const sched=schedSet().has(dow);
     const start=sessStart(); const beforeStart=start?(__dkey(dt)<start):true;  // avant le 1er usage : neutre, jamais « manqué »
     let status='none', info=null;
     if(e){
@@ -3817,7 +4332,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       const zones=(e.areas&&e.areas.length)?e.areas.map(function(a){return AREA_LABELS[a]||a;}):[];
       info={title:e.title||'Séance', zones:zones, forme:e.forme!=null?e.forme:0, duration:e.duration||0};
     } else if(isToday){ status=sched?'today':'today-rest'; }
-    else if(past){ status=(sched&&!beforeStart)?'missed':'rest'; }
+    else if(past){ status=(sched&&!beforeStart)?'missed':'rest'; }   // « manqué » seulement sur un jour explicitement choisi
     else { status=sched?'planned':'rest'; }
     return {d,dow,status,info,isToday};
   }
@@ -3909,7 +4424,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
         {/* résumé du mois */}
         <div style={{display:'flex',gap:8,marginBottom:18}}>
-          {[{v:doneCount,l:'ce mois',c:C.tealDk},{v:`${week}/4`,l:'cette sem.',c:week>=4?C.tealDk:C.ink},{v:window.__weekStreak(),l:'sem. réussies',c:C.orange}].map((s,i)=>(
+          {[{v:doneCount,l:'ce mois',c:C.tealDk},{v:`${week}/${window.__weeklyGoal()}`,l:'cette sem.',c:week>=window.__weeklyGoal()?C.tealDk:C.ink},{v:window.__weekStreak(),l:'sem. réussies',c:window.__weekStreak()>0?C.orange:C.muted}].map((s,i)=>(
             <div key={i} style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,boxShadow:C.sh,padding:'11px 8px',textAlign:'center'}}>
               <div style={{fontFamily:"'DM Mono',monospace",fontSize:21,fontWeight:500,color:s.c,lineHeight:1}}>{s.v}</div>
               <div style={{fontSize:10.5,color:C.muted,marginTop:3,letterSpacing:'0.03em'}}>{s.l}</div>
@@ -4013,6 +4528,53 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       ]},
   ];
 
+  /* ── Routines ÉQUILIBRE / PROPRIOCEPTION (≤ 10 min) ──
+     Annexe au programme, comme les étirements : lançables quand on veut, sans check-in.
+     L'équilibre progresse par la RÉPÉTITION plus que par la charge — d'où le format court
+     et fréquent. Chaque étape porte une consigne de sécurité : le risque de chute est réel
+     en SEP, donc on travaille systématiquement à portée d'un appui (mur, plan de travail,
+     dossier de chaise), et la progression se fait en RETIRANT l'appui, jamais en le supprimant. */
+  const B=(name,sec,side,position,desc,conseil,safety)=>({name,sec,side:side||'both',position,desc,conseil:conseil||'',safety:safety||''});
+  const APPUI='Reste à portée d’un appui solide (plan de travail, mur, dossier de chaise). Si tu vacilles, pose la main : ce n’est pas un échec, c’est la consigne.';
+  const BALANCE_ROUTINES=[
+    { id:'eq-base', title:'Équilibre essentiel', sub:'les bases, avec appui', min:7, color:'#3A7FCC',
+      icon:(c)=><g><path d="M12 3v18"/><path d="M5 8h14"/><path d="M7 21h10"/><circle cx="12" cy="5" r="2"/></g>,
+      steps:[
+        B('Ancrage & transferts latéraux',60,'both','Debout, pieds écartés largeur de bassin, main près d’un appui.','Transfère lentement ton poids sur le pied droit, puis sur le gauche. Va au bout du mouvement sans décoller le pied.','Tu réapprends à ton cerveau où se trouve ton centre de gravité — c’est la base de tout le reste.',APPUI),
+        B('Transferts avant / arrière',45,'both','Même position, mains libres ou effleurant l’appui.','Bascule doucement le poids vers les orteils, puis vers les talons, sans plier les hanches. Amplitude petite et contrôlée.','Travaille la cheville, premier rempart contre la chute vers l’avant.',APPUI),
+        B('Pas chassés lents',45,'both','Debout le long d’un plan de travail, main posée dessus.','Fais 3 pas sur le côté dans un sens, puis 3 dans l’autre. Lentement, en posant bien chaque pied.','Le déplacement latéral est le plus fragile en SEP : on l’entretient à petite dose.',APPUI),
+        B('Appui sur une jambe',40,'each','Debout, une main sur l’appui, l’autre jambe légèrement décollée.','Décolle un pied de quelques centimètres et tiens. Regard posé sur un point fixe devant toi.','Commence par ton côté le plus atteint. Allège l’appui quand tu te sens stable — un doigt suffit souvent.',APPUI),
+        B('Position tandem',40,'each','Un pied juste devant l’autre, comme sur une ligne, appui à portée.','Place un talon devant la pointe de l’autre pied et tiens la position. Puis inverse les pieds.','Rétrécit ta base de sustentation : c’est ce qui rend le pas plus sûr.',APPUI),
+        B('Montées sur pointes',45,'both','Debout, mains sur l’appui, pieds parallèles.','Monte lentement sur la pointe des pieds, tiens 2 secondes en haut, redescends encore plus lentement.','La descente lente est la partie qui compte le plus — c’est elle qui rattrape un déséquilibre.',APPUI),
+        B('Marche talon-pointe',60,'both','Le long d’un plan de travail, main en appui léger.','Avance en posant le talon juste devant la pointe du pied arrière. Fais quelques pas, demi-tour, reviens.','Enchaîne équilibre et déplacement — le plus proche de la marche réelle.',APPUI),
+        B('Ancrage & respiration',30,'both','Debout, pieds parallèles, bras le long du corps.','Sens le contact de tes deux pieds au sol, répartis ton poids également, respire lentement 3 fois.','Termine en reprenant conscience d’un appui stable et symétrique.',''),
+      ]},
+    { id:'eq-pied', title:'Proprioception du pied', sub:'sentir le sol, assis puis debout', min:8, color:'#6E73CE',
+      icon:(c)=><g><path d="M12 4c3 0 5 2 5 5 0 4-2 5-2 8a3 3 0 0 1-6 0c0-3-2-4-2-8 0-3 2-5 5-5z"/><path d="M9 20h6"/></g>,
+      steps:[
+        B('Réveil de la plante du pied',45,'each','Assis, une balle (ou une petite bouteille) sous le pied nu.','Roule lentement la balle sous toute la plante : talon, milieu, avant-pied, puis les bords.','Les troubles sensitifs brouillent les infos venant du pied. Ce massage les réveille avant le travail debout.',''),
+        B('Alphabet avec la pointe du pied',40,'each','Assis, jambe tendue, pied décollé du sol.','Dessine des lettres dans l’air avec la pointe du pied, lentement, en allant au bout de chaque mouvement.','Mobilise la cheville dans toutes les directions et affine le contrôle fin.',''),
+        B('Relevés talon / pointe assis',45,'both','Assis, pieds à plat, dos droit.','Lève les deux pointes de pied en gardant les talons au sol, repose. Puis lève les talons. Alterne lentement.','Réveille le releveur du pied — le muscle du pied qui accroche.',''),
+        B('Répartition du poids',45,'both','Debout, pieds parallèles, yeux ouverts, appui à portée.','Sans bouger, cherche à répartir ton poids également : avant/arrière, droite/gauche. Sens les 3 points d’appui de chaque pied.','Beaucoup de gens portent tout sur un côté sans le savoir. Ce scan corrige l’asymétrie.',APPUI),
+        B('Appui sur une jambe, yeux fermés',30,'each','Debout, main FERMEMENT sur l’appui, un pied décollé.','Tiens sur une jambe, puis ferme les yeux si tu te sens en confiance. Rouvre dès que tu vacilles.','Sans la vue, ton corps doit se fier au pied seul : c’est l’exercice de proprioception le plus efficace.','Garde la main sur l’appui du début à la fin. Ne ferme les yeux que si quelqu’un est là ou que tu es contre un mur.'),
+        B('Demi-pointe sur une jambe',30,'each','Debout, deux mains sur l’appui, un pied décollé.','Monte doucement sur la demi-pointe du pied au sol, puis redescends lentement.','Renforce la cheville dans la position exacte où elle doit te rattraper.',APPUI),
+        B('Marche sur les talons',45,'both','Le long d’un plan de travail, main en appui.','Avance sur les talons, pointes de pieds relevées, sur quelques pas. Demi-tour et reviens.','Cible directement le pied tombant.',APPUI),
+        B('Marche sur la pointe',45,'both','Même position, main en appui.','Avance sur la pointe des pieds, talons décollés, sur quelques pas. Demi-tour et reviens.','Complète le travail du mollet et de la cheville.',APPUI),
+      ]},
+    { id:'eq-dyn', title:'Équilibre dynamique', sub:'les bons jours — en mouvement', min:9, color:'#0E8FB0',
+      icon:(c)=><g><path d="M4 20l5-8 4 3 7-9"/><circle cx="7" cy="6" r="2"/><path d="M11 20l2-5"/></g>,
+      steps:[
+        B('Mise en route — transferts',45,'both','Debout, pieds largeur de bassin, appui à portée.','Transferts de poids latéraux puis avant/arrière, de plus en plus amples, sans jamais décoller les pieds.','Prépare tes chevilles et ton système d’équilibre avant le travail dynamique.',APPUI),
+        B('Lever de genou alterné',45,'both','Debout, main en appui léger.','Lève un genou vers la hanche, repose, puis l’autre. Rythme lent et régulier, buste droit.','Chaque appui unipodal dure une fraction de seconde — c’est exactement le cycle de la marche.',APPUI),
+        B('Pas en étoile',50,'each','Debout, une main sur l’appui, un pied qui explore.','Avec un pied, va toucher le sol devant, puis sur le côté, puis derrière, et reviens au centre. L’autre jambe porte.','Tu tiens sur une jambe pendant que l’autre bouge : le cas le plus proche d’un vrai déséquilibre.',APPUI),
+        B('Demi-tours contrôlés',50,'both','Debout dans un espace dégagé, appui à portée.','Fais un demi-tour lent en 4 petits pas, marque l’arrêt, puis reviens dans l’autre sens.','Le demi-tour est le moment n°1 des chutes. Le répéter lentement, c’est du direct.','Fais-le près d’un mur, jamais au milieu d’une pièce encombrée.'),
+        B('Appui sur une jambe + compte à rebours',40,'each','Debout, main en appui, un pied décollé.','Tiens sur une jambe en comptant à voix haute de 50 en arrière, de 3 en 3 (50, 47, 44…).','La double tâche, c’est la vraie vie : marcher en parlant. L’entraîner réduit les chutes.',APPUI),
+        B('Talon-pointe + épellation',60,'both','Le long d’un appui, main posée.','Avance en talon-pointe tout en épelant un mot long à l’envers (par exemple « équilibre »).','Combine déplacement fin et charge mentale — le plus exigeant de la série.',APPUI),
+        B('Pas chassés avec changement de sens',50,'both','Le long d’un plan de travail, main en appui.','3 pas chassés dans un sens, arrêt net, 3 dans l’autre. L’arrêt compte autant que le déplacement.','Savoir s’arrêter net est une compétence d’équilibre à part entière.',APPUI),
+        B('Retour au calme',40,'both','Debout, pieds parallèles, bras relâchés.','Répartis ton poids, respire lentement, sens le sol sous tes deux pieds. Relâche les épaules.','Redescends en douceur : ton système d’équilibre vient de beaucoup travailler.',''),
+      ]},
+  ];
+
   function StretchPlayer({ routine, onClose }){
     const aff=(window.__affectedSide&&window.__affectedSide()==='d')?'droite':'gauche';
     const other=aff==='droite'?'gauche':'droite';
@@ -4029,15 +4591,17 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     React.useEffect(()=>{ if(!running) return; if(remaining<=3&&remaining>=1){ try{beep(640,0.08);}catch(e){} } if(remaining===0&&!fired.current){ fired.current=true; try{beep(880,0.16);}catch(e){} setTimeout(next,120); } },[remaining,running]);
     function next(){ if(idx<steps.length-1){ setIdx(i=>i+1); } else finish(); }
     function prev(){ if(idx>0){ fired.current=false; setIdx(i=>i-1); } }
-    function finish(){ setRunning(false); try{beep(1046,0.3,0.2);}catch(e){} window.__logStretchSession({id:routine.id,title:routine.title,min:routine.min}); setDone(true); }
+    const kind=routine.kind||'stretch';
+    const isBal=kind==='balance';
+    function finish(){ setRunning(false); try{beep(1046,0.3,0.2);}catch(e){} window.__logStretchSession({id:routine.id,title:routine.title,min:routine.min,kind}); setDone(true); }
     const color=routine.color;
     if(done){
-      const st=window.__stretchStats();
+      const st=window.__stretchStats(kind);
       return (
         <div className="scroll" style={{position:'absolute',inset:0,zIndex:250,background:C.bg,display:'flex',flexDirection:'column',justifyContent:'center',padding:'34px 26px'}}>
           <div style={{width:66,height:66,borderRadius:'50%',background:'rgba(47,191,161,0.14)',border:'1px solid rgba(47,191,161,0.3)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 18px'}}><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke={C.teal} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
-          <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,marginBottom:8,textAlign:'center'}}>Séance d’étirement terminée</h2>
-          <p style={{fontSize:13.5,color:C.muted,lineHeight:1.5,marginBottom:22,textAlign:'center'}}>{routine.title} · {routine.min} min. Pratiqué régulièrement, c’est un vrai gain à long terme sur la souplesse et la spasticité.{st.week>1?` ${st.week} séances d’étirement cette semaine 🌿`:''}</p>
+          <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,marginBottom:8,textAlign:'center'}}>{isBal?'Séance d’équilibre terminée':'Séance d’étirement terminée'}</h2>
+          <p style={{fontSize:13.5,color:C.muted,lineHeight:1.5,marginBottom:22,textAlign:'center'}}>{routine.title} · {routine.min} min. {isBal?'L’équilibre progresse par la répétition, pas par l’intensité : quelques minutes souvent valent mieux qu’une longue séance de temps en temps.':'Pratiqué régulièrement, c’est un vrai gain à long terme sur la souplesse et la spasticité.'}{st.week>1?` ${st.week} séance${st.week>2?'s':''} ${isBal?'d’équilibre':'d’étirement'} cette semaine ${isBal?'🧭':'🌿'}`:''}</p>
           <Btn variant="primary" size="lg" fullWidth onClick={onClose}>Terminer</Btn>
         </div>
       );
@@ -4053,7 +4617,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{display:'flex',gap:4,padding:'8px 20px 0'}}>{steps.map((_,i)=><div key={i} style={{flex:1,height:5,borderRadius:3,background:i<idx?color:i===idx?C.ink:'rgba(14,81,74,0.12)',transition:'all 250ms ease'}}/>)}</div>
         <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',padding:'8px 22px 26px'}}>
           <div style={{textAlign:'center',marginBottom:6}}>
-            <span style={{fontSize:11.5,fontWeight:600,color:color,letterSpacing:'0.05em',textTransform:'uppercase'}}>{isEach?`Côté ${cur.sideLabel}`:'Maintien'}</span>
+            <span style={{fontSize:11.5,fontWeight:600,color:color,letterSpacing:'0.05em',textTransform:'uppercase'}}>{isEach?`Côté ${cur.sideLabel}`:(isBal?'Exercice':'Maintien')}</span>
             <h2 style={{fontFamily:'Georgia,serif',fontSize:25,fontWeight:600,color:C.ink,lineHeight:1.15,margin:'4px 0 0'}}>{cur.name}</h2>
           </div>
           <div onClick={()=>setRunning(r=>!r)} role="button" style={{cursor:'pointer',width:'fit-content',margin:'10px auto 0'}}>
@@ -4063,6 +4627,8 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             <div style={{fontSize:12,color:C.muted,marginBottom:5}}><b style={{color:C.body}}>Position · </b>{cur.position}</div>
             <div style={{fontSize:13.5,color:C.body,lineHeight:1.5}}>{cur.desc}</div>
             {cur.conseil&&<div style={{fontSize:12,color:C.tealDk,lineHeight:1.45,marginTop:8,display:'flex',gap:7}}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg><span>{cur.conseil}</span></div>}
+            {/* Consigne de sécurité (équilibre) : le risque de chute est réel, on ne l'enterre pas dans le texte. */}
+            {cur.safety&&<div style={{fontSize:12,color:'#9A5B12',lineHeight:1.45,marginTop:9,display:'flex',gap:7,background:'rgba(224,138,11,0.09)',border:'1px solid rgba(224,138,11,0.24)',borderRadius:11,padding:'8px 10px'}}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><path d="M10.3 3.2 1.8 17.5A2 2 0 0 0 3.5 20.5h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg><span>{cur.safety}</span></div>}
           </div>
           <div style={{display:'flex',gap:10,marginTop:14}}>
             {idx>0 && (
@@ -4070,7 +4636,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
             )}
-            <button onClick={next} style={{flex:1,minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>{idx<steps.length-1?(<>Étirement suivant<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Terminer la séance</>)}</button>
+            <button onClick={next} style={{flex:1,minHeight:48,borderRadius:14,background:C.card,border:`1.5px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:15,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>{idx<steps.length-1?(<>{isBal?'Exercice suivant':'Étirement suivant'}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg></>):(<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Terminer la séance</>)}</button>
           </div>
         </div>
       </div>
@@ -4079,20 +4645,39 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 
   function StretchingScreen() {
     const [active,setActive]=React.useState(null);
-    const stats=window.__stretchStats();
+    const [fam,setFam]=React.useState('stretch');            // 'stretch' | 'balance'
+    const isBal=fam==='balance';
+    const stats=window.__stretchStats(fam);
     const syms=window.__profileSymptoms(); const goals=window.__profileGoals();
-    const recommended = (syms.includes('spasticite')||goals.includes('Gagner en souplesse')) ? 'antispas'
-                      : syms.includes('equilibre') ? 'reveil' : 'soir';
+    /* Recommandation : on met en avant la routine qui répond au symptôme/objectif déclaré. */
+    const recommended = isBal
+      ? (syms.includes('sensitif') ? 'eq-pied' : goals.includes('Marcher plus longtemps') ? 'eq-dyn' : 'eq-base')
+      : ((syms.includes('spasticite')||goals.includes('Gagner en souplesse')) ? 'antispas'
+        : syms.includes('equilibre') ? 'reveil' : 'soir');
+    const list=(isBal?BALANCE_ROUTINES:STRETCH_ROUTINES).map(r=>({...r,kind:fam}));
     const totalSec=r=>r.steps.reduce((s,e)=>s+(e.side==='each'?e.sec*2:e.sec),0);
+    const unit=isBal?'exercices':'étirements';
     return (
       <div style={{minHeight:'100%',padding:'24px'}}>
         {active && <StretchPlayer routine={active} onClose={()=>setActive(null)}/>}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
-          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Mobilité · annexe</p>
+          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Compléments · annexe</p>
           <BrandMark/>
         </div>
-        <h2 style={{fontFamily:'Georgia,serif',fontSize:32,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',marginBottom:6}}>Étirements</h2>
-        <p style={{fontSize:13,color:C.muted,marginBottom:18,lineHeight:1.5}}>Des routines guidées à lancer quand tu veux — le matin, le soir, après une journée raide. Indépendantes de ta forme, elles entretiennent ta souplesse sur le long terme.</p>
+        <h2 style={{fontFamily:'Georgia,serif',fontSize:32,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',marginBottom:14}}>Routines</h2>
+        <div style={{display:'flex',gap:5,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,padding:4,marginBottom:14,boxShadow:C.sh}}>
+          {[{k:'stretch',label:'Étirements'},{k:'balance',label:'Équilibre'}].map(o=>{const a=fam===o.k;return(
+            <button key={o.k} onClick={()=>setFam(o.k)} style={{flex:1,minHeight:44,padding:'10px 6px',borderRadius:11,border:'none',cursor:'pointer',fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,background:a?'rgba(47,191,161,0.14)':'transparent',color:a?C.tealDk:C.muted,transition:'all 160ms ease'}}>{o.label}</button>);})}
+        </div>
+        <p style={{fontSize:13,color:C.muted,marginBottom:18,lineHeight:1.5}}>{isBal
+          ? 'Des séances courtes d’équilibre et de proprioception, à lancer quand tu veux — elles ne remplacent pas ta séance du jour et ne bloquent rien. L’équilibre se travaille par la répétition : 10 minutes souvent valent mieux qu’une heure de temps en temps.'
+          : 'Des routines guidées à lancer quand tu veux — le matin, le soir, après une journée raide. Indépendantes de ta forme, elles entretiennent ta souplesse sur le long terme.'}</p>
+        {isBal && (
+          <div style={{display:'flex',gap:9,alignItems:'flex-start',background:'rgba(224,138,11,0.09)',border:'1px solid rgba(224,138,11,0.24)',borderRadius:14,padding:'11px 13px',marginBottom:18}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,marginTop:1}}><path d="M10.3 3.2 1.8 17.5A2 2 0 0 0 3.5 20.5h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+            <span style={{fontSize:12.5,color:'#9A5B12',lineHeight:1.45}}>Travaille toujours à portée d’un appui solide — plan de travail, mur, dossier de chaise. Poser la main fait partie de l’exercice, pas l’inverse.</span>
+          </div>
+        )}
         {stats.total>0 && (
           <div style={{display:'flex',gap:10,marginBottom:20}}>
             <div style={{flex:1,background:C.card,border:`1px solid ${C.line}`,borderRadius:14,padding:'12px',textAlign:'center',boxShadow:C.sh}}><div style={{fontFamily:"'DM Mono',monospace",fontSize:22,fontWeight:500,color:C.ink}}>{stats.week}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>cette semaine</div></div>
@@ -4100,12 +4685,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           </div>
         )}
         <div style={{display:'flex',flexDirection:'column',gap:11}}>
-          {STRETCH_ROUTINES.map(r=>{ const rec=r.id===recommended; const mn=Math.round(totalSec(r)/60); return (
+          {list.map(r=>{ const rec=r.id===recommended; const mn=Math.round(totalSec(r)/60); return (
             <button key={r.id} onClick={()=>setActive(r)} style={{textAlign:'left',background:C.card,border:`1px solid ${rec?r.color+'66':C.line}`,borderRadius:18,padding:'16px',cursor:'pointer',boxShadow:C.sh,display:'flex',alignItems:'center',gap:14,fontFamily:"'DM Sans',sans-serif",position:'relative'}}>
               <div style={{width:46,height:46,borderRadius:13,background:r.color+'1A',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{r.icon(r.color)}</svg></div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:16,fontWeight:600,color:C.ink}}>{r.title}</span>{rec&&<span style={{fontSize:10,fontWeight:700,color:r.color,background:r.color+'1A',borderRadius:99,padding:'2px 8px',letterSpacing:'0.02em'}}>POUR TOI</span>}</div>
-                <div style={{fontSize:12.5,color:C.muted,marginTop:2}}>{r.sub} · {mn} min · {r.steps.length} étirements</div>
+                <div style={{fontSize:12.5,color:C.muted,marginTop:2}}>{r.sub} · {mn} min · {r.steps.length} {unit}</div>
               </div>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>
@@ -4231,6 +4816,9 @@ function reminderMessage() {
   ];
   return pool[day%pool.length];
 }
+/* Le corps du rappel est calculé ici (mêmes règles que la bannière) puis poussé au
+   service worker, qui n'a pas accès à localStorage. */
+window.__reminderBody=function(){ try{ return reminderMessage().b; }catch(e){ return 'Ta séance du jour t’attend — même 10 minutes comptent.'; } };
 
 /* ─── Bannière de rappel (jours prévus, séance non faite) ─── */
 /* ─── Rappel du bilan mensuel (dès le 1er, jusqu'à ce qu'il soit fait) ─── */
@@ -4238,7 +4826,7 @@ function BilanReminderBanner({ onOpen }) {
   return (
     <div onClick={onOpen} style={{margin:'0 0 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:12,background:'linear-gradient(135deg,#E4F4EF,#F2FAF8)',border:'1px solid rgba(47,191,161,0.32)',borderRadius:16,padding:'13px 15px',boxShadow:C.sh}}>
       <div style={{width:38,height:38,borderRadius:11,background:'rgba(47,191,161,0.14)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
-      <div style={{flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:C.ink,textTransform:'capitalize'}}>Bilan mensuel de {window.ED.monthLabel}</div><div style={{fontSize:12,color:C.body,marginTop:1}}>Mesure tes progrès du mois — 5 tests, ~8 min.</div></div>
+      <div style={{flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:C.ink}}>Bilan mensuel {window.__deMois(window.ED.monthLabel)}</div><div style={{fontSize:12,color:C.body,marginTop:1}}>Mesure tes progrès du mois — 5 tests, ~8 min.</div></div>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
     </div>
   );
@@ -4285,24 +4873,12 @@ function ReminderBanner() {
   );
 }
 
-/* ─── Aperçu de la notification push (18h) ─── */
-function PushPreview() {
-  const m=reminderMessage();
-  return (
-    <div style={{margin:'8px 0 4px',background:'rgba(255,255,255,0.7)',backdropFilter:'blur(8px)',border:'1px solid rgba(14,81,74,0.12)',borderRadius:16,padding:'11px 13px',display:'flex',alignItems:'center',gap:11,boxShadow:'0 4px 14px rgba(14,81,74,0.12)'}}>
-      <div style={{flexShrink:0}}><LogoMark size={30}/></div>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}><span style={{fontSize:12,fontWeight:700,color:C.ink}}>Élan</span><span style={{fontSize:10.5,color:C.muted}}>18:00</span></div>
-        <div style={{fontSize:12,color:C.body,marginTop:1,lineHeight:1.35}}>{m.b}</div>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [t,__setT]=React.useState(TWEAK_DEFAULTS);
   const setTweak=(k,v)=>__setT(p=>({...p,[k]:v}));
   React.useEffect(()=>{ const s=document.getElementById('splash'); if(s){ const id=setTimeout(()=>{ s.classList.add('hide'); setTimeout(()=>{ if(s.parentNode) s.remove(); },550); },400); return ()=>clearTimeout(id); } },[]);
+  /* Rappel quotidien : rattrapage à l'ouverture + minuterie tant que l'app est ouverte. */
+  React.useEffect(()=>window.__armReminder(),[]);
   window.EC.brand={show:t.showBranding, mode:t.brandStyle};
   const [metrics,setMetrics]=React.useState(()=>{ const c=window.__checkedInToday()&&window.__readCheckin(); return (c&&c.metrics)||{energy:null,fatigue:4,heat:4,sleep:6}; });
   const [context,setContext]=React.useState({location:'maison',equipment:['bodyweight','elastiques']});
@@ -4359,11 +4935,14 @@ function App() {
   React.useEffect(()=>{ if(checkedIn) setCustomIntensity(window.__suggestIntensity(metrics)); },[checkedIn]);
   const [gymId,setGymId]=React.useState(null);
   const baseProgram=React.useMemo(()=>window.generateProgram(metrics,context),[checkedIn,metrics.energy,metrics.fatigue,metrics.heat,metrics.sleep,ewTick]);
-  const program=React.useMemo(()=>{
+  /* Version courte (~10 min) : choisie au lancement, réinitialisée en revenant à l'accueil. */
+  const [shortMode,setShortMode]=React.useState(false);
+  const fullProgram=React.useMemo(()=>{
     if(sessionMode==='custom') return window.generateCustomProgram(customGoals,customIntensity,metrics,context);
     if(sessionMode==='gym'&&gymId) return window.buildGymProgram(gymId,context,metrics);
     return baseProgram;
   },[sessionMode,customGoals,customIntensity,gymId,baseProgram]);
+  const program=React.useMemo(()=>shortMode?window.__shortenProgram(fullProgram,10):fullProgram,[shortMode,fullProgram]);
   const sessionProps={ session:{mode:sessionMode,goals:customGoals,intensity:customIntensity,gymId}, setSession:{setMode:setSessionMode,setGoals:setCustomGoals,setIntensity:setCustomIntensity,setGymId} };
   return (
     <>
@@ -4372,10 +4951,10 @@ function App() {
       {checkedIn&&reviewCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:205,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
-      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>setStarted(false)}/></div>)}
+      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>{setStarted(false);setShortMode(false);}}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(92px + max(env(safe-area-inset-bottom, 0px), 22px))'}}>
         <div key={tab+String(started)} className="screen-in">
-          {tab==='today'      && (started ? null : (checkedIn&&window.__sessionDoneToday&&window.__sessionDoneToday()) ? <DonePanel onProgress={()=>setTab('progress')}/> : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
+          {tab==='today'      && (started ? null : (checkedIn&&window.__sessionDoneToday&&window.__sessionDoneToday()) ? <DonePanel onProgress={()=>setTab('progress')}/> : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onShort={()=>{setShortMode(s=>!s);}} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
