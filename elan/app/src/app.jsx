@@ -481,13 +481,15 @@ window.__aeroWeekCount=function(){ const wk=window.__isoWeekKey(); return window
 window.__aeroDueToday=function(){
   const wk=window.__isoWeekKey(); const hist=window.__sessHistory();
   const thisWeek=hist.filter(e=>e.region==='cardio' && window.__isoWeekKey(e.date)===wk);
-  if(thisWeek.length>=window.__AERO_PER_WEEK) return false;
-  if(thisWeek.length===0) return true;
   const dates=hist.filter(e=>e.region==='cardio').map(e=>e.date).sort();
   const last=dates[dates.length-1];
   const gap=last?window.__daysSince(last):99;    // écart en JOURS calendaires (0 = déjà fait aujourd'hui)
-  const isoDow=(new Date().getUTCDay()||7);
-  return gap>=2 || (isoDow>=5 && gap>=1);        // jamais deux fois le même jour
+  /* Espacement minimal ABSOLU, vérifié avant tout le reste : deux séances d'endurance
+     ne doivent jamais se suivre, même quand le compteur hebdomadaire vient d'être remis
+     à zéro par un changement de semaine ISO (endurance dimanche puis lundi). */
+  if(gap<2) return false;
+  if(thisWeek.length>=window.__AERO_PER_WEEK) return false;
+  return true;
 };
 window.__bestStreak=function(){
   const days=[...new Set(window.__sessHistory().map(e=>e.date))].sort();
@@ -501,8 +503,14 @@ window.__bestStreak=function(){
 /* ─── État du jour : check-in fait ? séance faite ? (1re ouverture = check-in, ensuite = programme) ─── */
 window.__today=function(){ return new Date().toISOString().slice(0,10); };
 window.__readCheckin=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_checkin'))||'null'); }catch(e){ return null; } };
-window.__saveCheckin=function(metrics){ const rec={date:window.__today(),metrics:metrics||{}}; try{ if(window.localStorage) localStorage.setItem('elan_checkin',JSON.stringify(rec)); }catch(e){} try{ window.__pushForme(window.__readiness(metrics).readiness); }catch(e){} return rec; };
+window.__saveCheckin=function(metrics){ const rec={date:window.__today(),metrics:metrics||{},ts:Date.now()}; try{ if(window.localStorage) localStorage.setItem('elan_checkin',JSON.stringify(rec)); }catch(e){} try{ window.__pushForme(window.__readiness(metrics).readiness); }catch(e){} return rec; };
 window.__checkedInToday=function(){ const c=window.__readCheckin(); return !!(c&&c.date===window.__today()); };
+/* Fraîcheur du check-in, en heures. Un check-in fait le matin ne dit plus grand-chose de
+   ta forme en fin d'après-midi : on propose alors de l'actualiser avant de lancer la séance.
+   Renvoie null si l'horodatage manque (enregistrements d'avant cette version). */
+window.__checkinAgeHours=function(){ const c=window.__readCheckin(); if(!c||c.date!==window.__today()||!c.ts) return null; return (Date.now()-c.ts)/3600000; };
+window.__CHECKIN_STALE_H=5;
+window.__checkinStale=function(){ const h=window.__checkinAgeHours(); return h!=null && h>=window.__CHECKIN_STALE_H; };
 /* Météo du jour (issue du check-in Open-Meteo) : pluie/neige → la marche extérieure bascule en intérieur */
 window.__saveWeatherToday=function(w){ try{ if(window.localStorage) localStorage.setItem('elan_weather',JSON.stringify(Object.assign({date:window.__today()},w||{}))); }catch(e){} };
 window.__weatherToday=function(){ try{ const w=JSON.parse((window.localStorage&&localStorage.getItem('elan_weather'))||'null'); return (w&&w.date===window.__today())?w:null; }catch(e){ return null; } };
@@ -1296,6 +1304,17 @@ window.generateProgram = function(metrics, context){
   if(easyWeek) reasons.push({t:`Semaine allégée · jour ${window.__easyWeekDay()}/7`, d:'ta forme a baissé plusieurs jours de suite — volume réduit, repos rallongés, aucun palier à valider : on protège ta récupération. Si la baisse persiste au-delà de la semaine, parles-en à ton médecin.'});
   reasons.push({t:'Séance pensée comme un kiné', d:arche.why});
   if(aeroMeta){
+    /* Cadence explicitée : l'endurance revient souvent, c'est voulu, et l'utilisateur doit
+       savoir POURQUOI et à quelle fréquence — sinon ça passe pour de la monotonie. */
+    {
+      const nb=(window.__aeroWeekCount&&window.__aeroWeekCount())||0;
+      const back=(function(){ const d=window.__sessHistory().map(e=>e.date).sort(); const l=d[d.length-1];
+        return l?window.__daysSince(l):999; })();
+      reasons.push({t:`Endurance ${nb+1}ᵉ fois cette semaine (sur ${window.__AERO_PER_WEEK} visées)`,
+        d:`C'est la cadence que vise Élan : ${window.__AERO_PER_WEEK} séances d'endurance par semaine, espacées d'au moins 2 jours, jamais deux jours de suite. L'aérobie est l'intervention la mieux documentée en SEP sur la fatigue et le périmètre de marche — c'est pour ça qu'elle a une place fixe, et pas seulement quand il reste du temps. Les autres jours vont à la force, l'équilibre et la proprioception.`});
+      if(back>=7) reasons.push({t:'Reprise après une pause',
+        d:`Tu n'as pas eu de séance depuis ${back} jours : je repars volontairement par de l'endurance. C'est ce qui se perd le plus vite à l'arrêt, ça se reprend en dosant finement sur ton périmètre, et c'est moins risqué qu'un retour direct à la force. Les séances de force reviennent dès la suivante.`});
+    }
     if(aeroMeta.kind==='walk'){
       reasons.push({t:`Dosée sur TON périmètre (${aeroMeta.perimeter} min)`, d:`${aeroMeta.walkTotal} min de marche cumulée en blocs de ${aeroMeta.blockMax} min max, avec de vraies pauses assises. Le cumul dépasse peu à peu ton périmètre — c'est le fractionné qui le permet — mais chaque bloc reste en dessous : on étend l'enveloppe par en bas, jamais en tapant le mur.`});
       if(aeroMeta.level>=4) reasons.push({t:'Ton endurance grandit', d:`tes blocs approchent ton périmètre déclaré. Quand un bloc de ${aeroMeta.blockMax} min te semble facile, refais le test de marche 6 min (onglet Tests) ou monte ton périmètre dans le Profil — toute la dose se recalera dessus.`});
@@ -2065,6 +2084,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [sheet,setSheet]=React.useState(null);
     const [whyOpen,setWhyOpen]=React.useState(false);
     const r=program.readiness, rc=r>=70?C.orange:r>=42?C.teal:'#9DB0AB';
+    const stale=window.__checkinStale&&window.__checkinStale()?Math.floor(window.__checkinAgeHours()):null;
     const meta={background:C.card,border:`1px solid ${C.line}`,borderRadius:12,padding:'8px 10px',boxShadow:C.sh};
     return (
       <div style={{flex:'1 0 auto',padding:'18px 24px 24px',display:'flex',flexDirection:'column'}}>
@@ -2109,6 +2129,15 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             {program.reasons.map((rs,i)=>(<div key={i} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{marginTop:6,width:5,height:5,borderRadius:'50%',background:C.teal,flexShrink:0}}/><span style={{fontSize:13,lineHeight:1.45,color:C.body}}><b style={{color:C.ink,fontWeight:600}}>{rs.t}</b> — {rs.d}</span></div>))}
           </div>)}
         </div>
+        {/* Check-in du matin, séance de l'après-midi : la forme a pu bouger entre-temps.
+            On propose de l'actualiser, sans l'imposer — la séance reste jouable telle quelle. */}
+        {stale!=null && (
+          <div style={{display:'flex',alignItems:'center',gap:11,background:'rgba(224,138,11,0.08)',border:'1px solid rgba(224,138,11,0.24)',borderRadius:16,padding:'12px 14px',marginBottom:18}}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.amber} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            <span style={{flex:1,fontSize:12.5,color:'#9A5B12',lineHeight:1.45}}>Check-in fait il y a {stale} h. Si ta forme a changé depuis, actualise-le pour redoser la séance.</span>
+            <button onClick={onReviewCheckin} style={{flexShrink:0,minHeight:38,padding:'0 13px',borderRadius:11,background:C.card,border:'1px solid rgba(224,138,11,0.3)',cursor:'pointer',color:'#9A5B12',fontSize:12.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>Actualiser</button>
+          </div>
+        )}
         {/* Liste repliée par défaut : elle est consultable, pas obligatoire — sans elle,
             le bouton « Commencer » restait à ~430 px sous le pli. */}
         <button onClick={()=>setListOpen(o=>!o)} aria-expanded={listOpen} style={{display:'flex',justifyContent:'space-between',alignItems:'center',width:'100%',minHeight:44,background:'none',border:0,padding:0,cursor:'pointer',marginBottom:listOpen?12:0,textAlign:'left',fontFamily:"'DM Sans',sans-serif"}}>
@@ -2277,6 +2306,53 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
   window.ES.DonePanel=DonePanel;
+
+  /* Accueil sans check-in du jour. Le check-in ne sert qu'à DOSER la séance Élan IA
+     (forme du jour → volume, intensité, archétype) : il ne conditionne donc que celle-ci.
+     Tout le reste de l'app est utilisable sans lui, et on le dit explicitement plutôt que
+     de laisser l'utilisateur devant une porte fermée. */
+  function CheckinGate({ onStart, onRoutines }){
+    const hour=new Date().getHours();
+    const salut=hour<12?'Bonjour':hour<18?'Bon après-midi':'Bonsoir';
+    return (
+      <div style={{flex:'1 0 auto',padding:'18px 24px 24px',display:'flex',flexDirection:'column'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+          <p style={{fontSize:11,color:C.muted,letterSpacing:'0.08em',textTransform:'uppercase',margin:0,paddingTop:4}}>Aujourd’hui</p>
+          <BrandMark/>
+        </div>
+        <h1 style={{fontFamily:'Georgia,serif',fontSize:30,fontWeight:600,color:C.ink,letterSpacing:'-0.025em',lineHeight:1.1,marginBottom:6}}>{salut}, {window.ED.user}</h1>
+        <p style={{fontSize:13,color:C.muted,marginBottom:22}}>{window.__capFirst(window.ED.today)}</p>
+
+        <div style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:22,padding:'20px',boxShadow:C.sh,marginBottom:14}}>
+          <div style={{display:'flex',alignItems:'center',gap:11,marginBottom:12}}>
+            <div style={{width:38,height:38,borderRadius:12,background:C.tint,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:15.5,fontWeight:600,color:C.ink}}>Ta séance du jour</div>
+              <div style={{fontSize:12.5,color:C.muted,marginTop:1}}>~1 min de check-in pour la doser</div>
+            </div>
+          </div>
+          <p style={{fontSize:13.5,color:C.body,lineHeight:1.55,marginBottom:18}}>Élan a besoin de ta forme du jour pour choisir le bon type de séance et le bon volume — c’est tout l’intérêt : la séance s’adapte à l’état où tu es <b style={{color:C.ink}}>maintenant</b>, pas à une moyenne.</p>
+          <Btn variant="primary" size="lg" fullWidth onClick={onStart}>Faire mon check-in →</Btn>
+        </div>
+
+        <button onClick={onRoutines} style={{display:'flex',alignItems:'center',gap:12,width:'100%',textAlign:'left',background:C.card,border:`1px solid ${C.line}`,borderRadius:18,padding:'15px 16px',boxShadow:C.sh,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>
+          <div style={{width:38,height:38,borderRadius:11,background:'rgba(58,127,204,0.10)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#3A7FCC" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:14.5,fontWeight:600,color:C.ink}}>Étirements & équilibre</div>
+            <div style={{fontSize:12.5,color:C.muted,lineHeight:1.45,marginTop:2}}>Disponibles sans check-in — elles ne dépendent pas de ta forme du jour.</div>
+          </div>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+
+        <p style={{fontSize:12,color:C.muted,lineHeight:1.5,marginTop:'auto',paddingTop:20,textAlign:'center'}}>Tes progrès et ton calendrier restent consultables à tout moment.</p>
+      </div>
+    );
+  }
+  window.ES.CheckinGate=CheckinGate;
 })();
 /* components block 4 */
 (function(){
@@ -4703,7 +4779,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
 })();
 /* App block (TweaksPanel retiré ci-dessous via edits) */
 const { BottomNav, Btn, LogoMark, C } = window.EC;
-const { CheckIn, CheckInHybride, ProgramScreen, DonePanel, FocusScreen, ProgressScreen, BilanMensuel, BilanInitial, CalendarScreen, StretchingScreen } = window.ES;
+const { CheckIn, CheckInHybride, ProgramScreen, DonePanel, CheckinGate, FocusScreen, ProgressScreen, BilanMensuel, BilanInitial, CalendarScreen, StretchingScreen } = window.ES;
 /* TweaksPanel retiré (outil Claude Design) — remplacé par un état local simple */
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showBranding": true,
@@ -4904,8 +4980,12 @@ function App() {
      une entrée d'historique « sentinelle » tant qu'il y a quelque chose à fermer, et on intercepte
      popstate pour fermer l'overlay/la séance ou revenir à l'accueil. À la racine (accueil, rien
      d'ouvert), on laisse le retour quitter l'app, comme partout ailleurs sur Android. */
-  const onboarding=(!baselineDone&&!skipBaseline)||!checkedIn;
-  const canGoBack=!!(recap||reviewCheckin||started||showBilan||onboarding||tab!=='today');
+  /* Seul le bilan initial est bloquant (il calibre les niveaux). Le check-in du jour, lui,
+     ne conditionne QUE la génération de la séance Élan IA : les étirements, l'équilibre,
+     les progrès et le calendrier restent accessibles sans l'avoir fait. */
+  const onboarding=(!baselineDone&&!skipBaseline);
+  const [openCheckin,setOpenCheckin]=React.useState(false);
+  const canGoBack=!!(recap||reviewCheckin||openCheckin||started||showBilan||onboarding||tab!=='today');
   const navRef=React.useRef({});
   navRef.current={ recap, reviewCheckin, started, showBilan, onboarding, tab, closeRecap, closeReview, setStarted, setShowBilan, setTab };
   const armedRef=React.useRef(false);
@@ -4947,14 +5027,17 @@ function App() {
   return (
     <>
       {!baselineDone&&!skipBaseline&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:220,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanInitial onDone={()=>setBaselineDone(true)} onSkip={()=>{window.__markBaselineSkipped();setSkipBaseline(true);}}/></div>)}
-      {!checkedIn&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:200,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);}}/>}</div>)}
+      {!checkedIn&&openCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:200,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={()=>setOpenCheckin(false)} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);setOpenCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={()=>setOpenCheckin(false)} onConfirm={()=>{window.__saveCheckin(metrics);setCheckedIn(true);setOpenCheckin(false);}}/>}</div>)}
       {checkedIn&&reviewCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:205,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
       {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>{setStarted(false);setShortMode(false);}}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(92px + max(env(safe-area-inset-bottom, 0px), 22px))'}}>
         <div key={tab+String(started)} className="screen-in">
-          {tab==='today'      && (started ? null : (checkedIn&&window.__sessionDoneToday&&window.__sessionDoneToday()) ? <DonePanel onProgress={()=>setTab('progress')}/> : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onShort={()=>{setShortMode(s=>!s);}} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
+          {tab==='today'      && (started ? null
+            : (checkedIn&&window.__sessionDoneToday&&window.__sessionDoneToday()) ? <DonePanel onProgress={()=>setTab('progress')}/>
+            : !checkedIn ? <CheckinGate onStart={()=>setOpenCheckin(true)} onRoutines={()=>setTab('stretching')}/>
+            : <><div style={{padding:(showReminder||showBilanReminder||showEasyBanner)?'24px 24px 0':0}}>{showEasyBanner&&<EasyWeekBanner onChange={()=>setEwTick(t=>t+1)}/>}{showBilanReminder&&<BilanReminderBanner onOpen={()=>{setTab('progress');setShowBilan(true);}}/>}{showReminder&&<ReminderBanner/>}</div><ProgramScreen program={program} onStart={()=>setStarted(true)} onShort={()=>{setShortMode(s=>!s);}} onReviewCheckin={()=>setReviewCheckin(true)} {...sessionProps}/></>)}
           {tab==='progress'   && <ProgressScreen onOpenBilan={()=>setShowBilan(true)} bilanDone={bilanDone} onRedoBaseline={()=>{window.__clearBaseline();window.__clearBaselineSkip();setSkipBaseline(false);setBaselineDone(false);}} onResetAll={()=>{window.__resetAllData();window.location.reload();}}/>}
           {tab==='calendar'   && <CalendarScreen/>}
           {tab==='stretching' && <StretchingScreen/>}
