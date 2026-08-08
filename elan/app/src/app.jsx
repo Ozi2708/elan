@@ -828,7 +828,8 @@ window.__mapExercise = function(ex, diff, ctx){
   o.level=level;
   const __aff = (o.side==='each' && window.__affectedSide) ? window.__affectedSide() : null;
   if(__aff){ o.startSide = __aff==='g'?'gauche':'droite'; }
-  const startCue = __aff ? ` · commence par ton côté ${o.startSide}` : '';
+  /* « côté » est masculin : on accorde le mot de la consigne, pas celui du réglage. */
+  const startCue = __aff ? ` · commence par ton côté ${__aff==='g'?'gauche':'droit'}` : '';
   const sideSuffix = (o.side==='each' ? ` par ${o.sideLabel}` : o.side==='alt' ? ' (en alternant)' : '') + startCue;
   if(ex.unit==='reps'){
     const st=__stepStrength(level, ex.sets||2, ex.reps||10);
