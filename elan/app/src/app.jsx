@@ -310,6 +310,10 @@ window.__logSession=function(exId,outcome,area,tier){
   if(!r){ const base=(area&&window.__hasBaseline())?window.__baselineLevel(area):0; r=all[exId]={level:base,success:0}; }
   if(outcome==='hard'){ r.level=Math.max(0,(r.level||0)-1); r.success=0; r.lastChange='down'; }
   else if(outcome==='easy'){ r.level=Math.min(window.__exMax,(r.level||0)+1); r.success=0; r.lastChange='up'; }
+  /* « hold » : effort déjà soutenu (RPE 7-8). On ne descend pas — c'était faisable — mais on
+     ne capitalise rien non plus : le compteur de réussites est remis à zéro, donc aucun palier
+     ne se déclenche. Sans ça, un exercice vécu comme très dur continuait à durcir. */
+  else if(outcome==='hold'){ r.success=0; r.lastChange='kept'; }
   /* progression auto : 2 séances réussies → +1 niveau, mais on ne capitalise PAS une
      progression sur un jour de forme basse (séance volontairement allégée). */
   else { r.success=(r.success||0)+1; if(r.success>=2 && tier!=='low'){ r.level=Math.min(window.__exMax,(r.level||0)+1); r.success=0; r.lastChange='up'; } else r.lastChange='kept'; }
@@ -880,6 +884,73 @@ function __estSec(e){
   return sets*perSet;
 }
 function __sessionDuration(exs){ return Math.max(5, Math.round(exs.reduce((s,e)=>s+__estSec(e),0)/60)); }
+
+/* ─── Remplacer un exercice par un AUTRE exercice ──────────────────────────────
+   Différent d'« alléger » : ici on ne touche pas à la dose, on change le mouvement.
+   L'utilisateur veut travailler la même chose autrement — parce que celui-ci ne passe
+   pas aujourd'hui (douleur d'épaule, position au sol impossible, appui douloureux).
+   Critères, par ordre d'importance :
+     · même zone du corps (contrainte dure) ;
+     · MÊME schéma moteur interdit — sinon on repropose la même chose sous un autre nom ;
+     · recouvrement des muscles ciblés, puis des axes de travail ;
+     · difficulté au plus égale à l'exercice remplacé (souvent on cherche plus abordable) ;
+     · matériel disponible, exercice pas déjà dans la séance, pas signalé comme gênant. */
+window.__findAlternative = function(ex, opts){
+  opts=opts||{};
+  const avail=opts.avail||['bodyweight'];
+  const exclude=new Set((opts.exclude||[]).map(s=>String(s).toLowerCase()));
+  const diffFlags=window.__readDiff?window.__readDiff():{};
+  const area=ex.area||ex.region;
+  const wantMuscles=new Set(ex.muscleTags||[]);
+  const wantTargets=new Set(ex.targets||[]);
+  const curDiff=ex.difficulty||3;
+
+  const pool=[];
+  const seen=new Set();
+  (window.ED_SESSIONS||[]).forEach(s=>{
+    if(!s.equip.every(e=>avail.includes(e))) return;
+    (s.exercises||[]).forEach(c=>{
+      if((c.phase||'main')!=='main') return;
+      /* On ne borne PAS à la même région : « lower », « balance » et « proprioception » se
+         recouvrent largement (un travail de mollets existe dans les trois). C'est le muscle
+         commun, exigé plus bas, qui garantit la pertinence — pas l'étiquette de zone.
+         Exclus en revanche : le cardio (blocs dédiés) et les étirements (un étirement passif
+         ne remplace pas un exercice de renforcement). */
+      if(c.region==='cardio' || c.region==='stretching') return;
+      if(c.name===ex.name || c.id===ex.id) return;
+      if(exclude.has(String(c.name).toLowerCase())) return;
+      if(diffFlags[c.id]) return;                       // déjà signalé comme gênant
+      if(c.pattern && ex.pattern && c.pattern===ex.pattern) return;   // vraiment un autre mouvement
+      if(seen.has(c.name)) return; seen.add(c.name);
+      pool.push(c);
+    });
+  });
+  if(!pool.length) return null;
+
+  const inter=(a,b)=>{ let n=0; (a||[]).forEach(v=>{ if(b.has(v)) n++; }); return n; };
+  const scored=pool.map(c=>{
+    const mOv=inter(c.muscleTags, wantMuscles), tOv=inter(c.targets, wantTargets);
+    /* Au moins un muscle en commun, sans exception. Les axes (« force-bas ») sont trop
+       grossiers pour servir de garde-fou : ils couvrent tout le bas du corps, et laissaient
+       proposer des pas latéraux à la place d'un travail de mollets. Mieux vaut ne rien
+       proposer qu'un exercice qui ne travaille pas la même chose. */
+    if(mOv===0) return {c,sc:-1e9};
+    let sc=0;
+    sc += mOv*10;                                       // mêmes muscles = le critère n°1
+    sc += tOv*6;                                        // mêmes axes de travail
+    const d=c.difficulty||3;
+    if(d<=curDiff) sc += 6 - (curDiff-d);               // plus abordable, sans tomber trop bas
+    else sc -= (d-curDiff)*8;                           // plus dur : fortement pénalisé
+    if(c.region===area) sc += 5;                        // même zone : à privilégier, sans l'imposer
+    if((c.flags||[]).indexOf('floorTransition')>=0 && (ex.flags||[]).indexOf('floorTransition')<0) sc-=6;  // pas de passage au sol imposé
+    if((c.flags||[]).indexOf('fallRisk')>=0 && (ex.flags||[]).indexOf('fallRisk')<0) sc-=5;
+    if(c.position && ex.position && c.position===ex.position) sc+=3;  // même position = transition facile
+    return {c,sc};
+  }).sort((a,b)=>b.sc-a.sc);
+
+  const best=scored[0];
+  return (best && best.sc>0) ? best.c : null;
+};
 
 /* Allège la dose d'un exercice déjà calibré, de `n` crans, pour AUJOURD'HUI seulement.
    Le niveau acquis n'est pas touché : c'est une adaptation du jour, pas une régression. */
@@ -2373,7 +2444,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     );
   }
 
-  function FocusScreen({ program, onBack }) {
+  function FocusScreen({ program, onBack, context }) {
     const exs=program.exercises;
     /* Endurance (marche / vélo) : une fois le 1er minuteur lancé, les blocs cardio s'enchaînent
        seuls — c'est le but de l'exercice. Sur toutes les autres séances on garde la main. */
@@ -2396,6 +2467,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const fired=React.useRef(false);
     const skippedRef=React.useRef(new Set());          // exercices passés : validés « faits » nulle part
     const [eased,setEased]=React.useState({});         // allègements du jour, par exercice
+    const [swapped,setSwapped]=React.useState({});     // exercices remplacés, par index
     const restKindRef=React.useRef('set');   // 'set' (entre séries) | 'next' (entre exercices)
     const [flagOpen,setFlagOpen]=React.useState(false);
     const [infoOpen,setInfoOpen]=React.useState(false);
@@ -2406,7 +2478,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const [rpe,setRpe]=React.useState(null);   // effort ressenti 1-10 (autorégulation)
     React.useEffect(()=>{ setRpe(null); },[exIdx]);
 
-    const exRaw=exs[exIdx];
+    const exRaw=swapped[exIdx]||exs[exIdx];
     const ex=window.__easeExercise(exRaw, (exRaw&&eased[exRaw.id])||0);
     const sets=ex.sets||1;
     const isEach = !ex.weighted && ex.side==='each';
@@ -2432,16 +2504,23 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const loggedRef=React.useRef(new Set());
     /* Effort ressenti (RPE 1-10) → autorégulation graduée. 1-3 trop facile (on corse),
        4-8 bonne zone (progression normale), 9-10 très dur (on allège). */
+    /* Effort ressenti — calibré sur une échelle type Borg CR10, et prudemment.
+       La zone d'entraînement visée en SEP est MODÉRÉE : 4-6. À 7-8 l'effort est déjà
+       soutenu — c'est faisable, mais ce n'est pas un feu vert pour durcir. À 9-10 on allège.
+       Traiter 8/10 comme « bonne zone, je fais progresser » revenait à pousser quelqu'un
+       qui vient de dire que c'était très dur. */
     function rateRPE(v){
       if(rpe!=null) return;                  // une seule notation par exercice
       setRpe(v);
-      const outcome = v<=3?'easy' : v>=9?'hard' : 'ok';
+      const outcome = v<=3?'easy' : v<=6?'ok' : v<=8?'hold' : 'hard';
       outcomeRef.current[ex.id]= outcome==='ok' ? 'rpe' : outcome;   // marque l'exo comme évalué
       window.__logSession(ex.id, outcome, ex.area, program.easyWeek?'low':program.tier);   // semaine allégée : pas de palier validé
-      setToast(v<=3 ? `Effort ${v}/10 — je corse cet exercice la prochaine fois.`
-             : v>=9 ? `Effort ${v}/10 — j’allège un peu la prochaine fois.`
-             : `Effort ${v}/10 — bonne zone, je garde le cap et fais progresser en douceur.`);
-      setTimeout(()=>setToast(null),3400);
+      setToast(
+        outcome==='easy' ? `Effort ${v}/10 — trop facile : je corse cet exercice la prochaine fois.`
+      : outcome==='ok'   ? `Effort ${v}/10 — bonne zone. Je fais progresser en douceur.`
+      : outcome==='hold' ? `Effort ${v}/10 — c’est déjà soutenu. Je garde cette dose sans la durcir.`
+      :                    `Effort ${v}/10 — trop dur : j’allège la prochaine fois.`);
+      setTimeout(()=>setToast(null),3600);
     }
     /* Passer un exercice : il faut une porte de sortie propre quand un mouvement ne passe
        pas aujourd'hui (spasticité, douleur, vertige). On le marque « sauté » — donc PAS
@@ -2460,6 +2539,24 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       setTimeout(()=>setToast(null),3000);
       if(exIdx<exs.length-1){ setExIdx(i=>i+1); setSetNum(1); setPhase('work'); }
       else { window.__clearSessionState(); setAllDone(true); }
+    }
+    /* Remplacer l'exercice : même zone, mêmes muscles, mais un AUTRE mouvement.
+       On ne touche pas au niveau acquis de l'exercice remplacé — il n'a pas échoué,
+       il ne convenait pas aujourd'hui — mais on note qu'il a gêné pour en tenir compte. */
+    function swapExercise(){
+      const alt=window.__findAlternative(ex,{
+        avail:(context&&context.equipment)||['bodyweight'],
+        exclude:exs.map(e=>e.name).concat(Object.values(swapped).map(e=>e.name)),
+      });
+      setFlagOpen(false); setRunning(false);
+      if(!alt){ setToast('Aucun autre exercice équivalent disponible avec ton matériel.'); setTimeout(()=>setToast(null),3400); return; }
+      const mapped=window.__mapExercise(alt, window.__readDiff(), {tier:program.tier, metrics:(window.__readCheckin()||{}).metrics||{}, recentLoad:window.__recentLoadFactor()});
+      window.__logSession(ex.id,'hard',ex.area);        // celui-ci gênait : on l'allègera à l'avenir
+      outcomeRef.current[ex.id]='hard';
+      setSwapped(s=>({...s,[exIdx]:mapped}));
+      setSetNum(1); setPhase('work');
+      setToast(`Remplacé par « ${mapped.name} » — mêmes muscles, autre mouvement.`);
+      setTimeout(()=>setToast(null),4200);
     }
     /* Version plus facile, tout de suite : on redescend d'un cran la dose du jour
        (séries, durée, répétitions) sans toucher au niveau acquis. */
@@ -2486,7 +2583,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
       fired.current=false;
       if(phase==='rest'){ const rs=restKindRef.current==='side'?7:restSec; setRemaining(rs); setRunning(true); }
       else { setWarmStep(0); setRemaining(isStepped ? stepDur : (ex.workSec||0)); setRunning(autoChain && chainRef.current && ex.area==='cardio' && (ex.workSec||0)>0); }
-    },[exIdx,setNum,phase,eased]);   // `eased` : alléger relance le minuteur sur la nouvelle dose
+    },[exIdx,setNum,phase,eased,swapped]);   // alléger ou remplacer relance le minuteur sur la nouvelle dose
     // pré-remplir poids/reps depuis la dernière séance (musculation salle)
     React.useEffect(()=>{ const e=exs[exIdx]; if(e&&e.weighted){ const last=window.__lastStrength(e.id); setLoadW(last?last.weight:10); setLoadR(last?last.reps:(e.reps||8)); } },[exIdx]);
 
@@ -2636,11 +2733,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                 {sets>1&&<span style={{fontFamily:"'DM Mono',monospace",fontSize:12,color:C.muted}}>Série {setNum}/{sets}</span>}
               </div>
               <h2 style={{fontFamily:'Georgia,serif',fontSize:26,fontWeight:600,color:C.ink,letterSpacing:'-0.02em',lineHeight:1.15,marginBottom:6,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{ex.name}</h2>
-              {(ex.levelNote||ex.tempo||ex.mod||ex.eased>0)&&(
+              {(ex.levelNote||ex.tempo||ex.mod||ex.eased>0||swapped[exIdx])&&(
                 <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
                   {ex.levelNote&&<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:99,padding:'3px 9px'}}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>{ex.levelNote}</span>}
                   {(ex.tempo||ex.mod)&&<span style={{fontSize:11,fontWeight:600,color:C.orange,background:'rgba(224,138,11,0.1)',border:'1px solid rgba(224,138,11,0.26)',borderRadius:99,padding:'3px 9px'}}>{ex.tempo||ex.mod}</span>}
-                  {ex.eased>0&&<span style={{fontSize:11,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:99,padding:'3px 9px',whiteSpace:'nowrap'}}>allégé ×{ex.eased}</span>}
+                  {ex.eased>0&&<span style={{fontSize:11,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',border:'1px solid rgba(47,191,161,0.28)',borderRadius:99,padding:'3px 9px',whiteSpace:'nowrap'}}>dose réduite ×{ex.eased}</span>}
+                  {swapped[exIdx]&&<span style={{fontSize:11,fontWeight:600,color:'#7A4AA8',background:'rgba(158,107,198,0.12)',border:'1px solid rgba(158,107,198,0.3)',borderRadius:99,padding:'3px 9px',whiteSpace:'nowrap'}}>exercice remplacé</span>}
                 </div>
               )}
               {/* set dots */}
@@ -2702,11 +2800,12 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                     <span style={{fontSize:10.5,color:C.faint}}>{rpe!=null?'merci !':'aide-moi à doser'}</span>
                   </div>
                   <div style={{display:'flex',gap:3}}>
-                    {Array.from({length:10}).map((_,i)=>{const v=i+1;const zc=v<=3?'#2FA56B':v>=9?C.amber:C.teal;const on=rpe===v;const rated=rpe!=null;return(
+                    {/* 1-3 trop facile · 4-6 zone visée · 7-8 déjà soutenu · 9-10 trop dur */}
+                    {Array.from({length:10}).map((_,i)=>{const v=i+1;const zc=v<=3?'#2FA56B':v<=6?C.teal:v<=8?C.amber:'#C2410C';const on=rpe===v;const rated=rpe!=null;return(
                       <button key={v} disabled={rated} onClick={()=>rateRPE(v)} style={{flex:1,minHeight:40,borderRadius:9,border:`1px solid ${on?zc:C.line}`,background:on?zc:C.card,color:on?'#fff':(rated?C.faint:C.body),fontSize:13,fontWeight:600,cursor:rated?'default':'pointer',fontFamily:"'DM Mono',monospace",opacity:rated&&!on?0.45:1,padding:0,touchAction:'manipulation',transition:'all 120ms ease'}}>{v}</button>
                     );})}
                   </div>
-                  <div style={{display:'flex',justifyContent:'space-between',marginTop:5,fontSize:9.5,color:C.faint}}><span>très facile</span><span>bonne zone</span><span>très dur</span></div>
+                  <div style={{display:'flex',marginTop:5,fontSize:9.5,color:C.faint}}><span style={{flex:3}}>trop facile</span><span style={{flex:3,textAlign:'center'}}>zone visée</span><span style={{flex:2,textAlign:'center'}}>soutenu</span><span style={{flex:2,textAlign:'right'}}>trop dur</span></div>
                 </div>
               )}
               <div style={{display:'flex',gap:8,marginTop:8}}>
@@ -2779,18 +2878,22 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
                   </button>
                 ))}
               </div>
-              {/* Sortie immédiate : alléger tout de suite, ou passer. Sans ça, un exercice
-                  qui ne passe pas aujourd'hui bloque toute la séance. */}
+              {/* Trois sorties distinctes, libellées sans ambiguïté : changer de mouvement,
+                  garder le mouvement mais réduire la dose, ou passer. */}
               <div style={{height:1,background:C.line,margin:'18px 0 14px'}}/>
               <p style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:10}}>Et pour aujourd'hui ?</p>
-              <div style={{display:'flex',gap:9}}>
-                <button onClick={easierNow} style={{flex:1,minHeight:50,borderRadius:13,background:C.tint,border:'1px solid rgba(47,191,161,0.3)',cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/></svg>
-                  Version plus facile
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <button onClick={swapExercise} style={{textAlign:'left',background:C.tint,border:'1px solid rgba(47,191,161,0.32)',borderRadius:14,padding:'12px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:12,fontFamily:"'DM Sans',sans-serif",minHeight:56}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                  <div style={{flex:1}}><div style={{fontSize:14.5,fontWeight:600,color:C.ink}}>Changer d’exercice</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>Un autre mouvement, mêmes muscles travaillés.</div></div>
                 </button>
-                <button onClick={skipExercise} style={{flex:1,minHeight:50,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.body,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.body} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-                  Passer
+                <button onClick={easierNow} style={{textAlign:'left',background:C.bg,border:`1px solid ${C.line}`,borderRadius:14,padding:'12px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:12,fontFamily:"'DM Sans',sans-serif",minHeight:56}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><path d="M5 12h14"/></svg>
+                  <div style={{flex:1}}><div style={{fontSize:14.5,fontWeight:600,color:C.ink}}>Réduire la dose</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>Même exercice, moins de séries et de répétitions.</div></div>
+                </button>
+                <button onClick={skipExercise} style={{textAlign:'left',background:C.bg,border:`1px solid ${C.line}`,borderRadius:14,padding:'12px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:12,fontFamily:"'DM Sans',sans-serif",minHeight:56}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.body} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><polyline points="5 4 15 12 5 20"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                  <div style={{flex:1}}><div style={{fontSize:14.5,fontWeight:600,color:C.ink}}>Passer cet exercice</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>On enchaîne, la séance continue.</div></div>
                 </button>
               </div>
               <button onClick={()=>setFlagOpen(false)} style={{display:'block',margin:'16px auto 0',background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
@@ -5032,7 +5135,7 @@ function App() {
       {checkedIn&&reviewCheckin&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:205,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}>{t.checkinMode==='Classique (ressenti)'?<CheckIn metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>:<CheckInHybride metrics={metrics} setMetrics={setMetrics} context={context} setContext={setContext} onClose={closeReview} onConfirm={()=>{window.__saveCheckin(metrics);setReviewCheckin(false);}}/>}</div>)}
       {showBilan&&(<div className="scroll" style={{position:'absolute',inset:0,zIndex:210,background:`linear-gradient(180deg,${C.tint},${C.bg} 40%)`}}><BilanMensuel onClose={()=>setShowBilan(false)} onSave={()=>{setBilanDone(true);setShowBilan(false);setTab('progress');}}/></div>)}
       {recap&&<RecapOverlay kind={recap.kind} onClose={closeRecap}/>}
-      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} onBack={()=>{setStarted(false);setShortMode(false);}}/></div>)}
+      {tab==='today'&&started && (<div style={{position:'absolute',inset:0,zIndex:120,background:C.bg,display:'flex',flexDirection:'column',paddingBottom:'max(env(safe-area-inset-bottom, 0px), 22px)'}}><FocusScreen program={program} context={context} onBack={()=>{setStarted(false);setShortMode(false);}}/></div>)}
       <div className="scroll" style={{paddingBottom: tab==='today'&&started ? 0 : 'calc(92px + max(env(safe-area-inset-bottom, 0px), 22px))'}}>
         <div key={tab+String(started)} className="screen-in">
           {tab==='today'      && (started ? null
