@@ -2,7 +2,7 @@
    Stratégie : network-first. On sert toujours la version réseau quand elle est
    disponible (donc jamais de version périmée après un déploiement Vercel), et on
    retombe sur le cache uniquement hors-ligne. */
-const CACHE = 'elan-v36';
+const CACHE = 'elan-v37';
 /* Cache de configuration (rappels) — partagé entre la page et le service worker.
    Il ne contient PAS de ressources : c'est un petit magasin JSON, plus simple qu'IndexedDB
    et lisible des deux côtés. Il doit survivre aux changements de version du cache. */

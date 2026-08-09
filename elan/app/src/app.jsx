@@ -176,6 +176,58 @@ window.__pushBase = function(key,val,calibN){ calibN=calibN||3; const b=window._
 window.__suggestIntensity = function(m){ return ({low:'legere',moderate:'moderee',high:'soutenue'})[window.__readiness(m).tier]; };
 const __round=(v,step=1)=>Math.max(step, Math.round(v/step)*step);
 const __rotate=(arr,seed)=>{ if(!arr.length) return arr; const k=((seed%arr.length)+arr.length)%arr.length; return arr.slice(k).concat(arr.slice(0,k)); };
+
+/* ─── Retour au calme : muscles réellement étirés ──────────────────────────────
+   La bibliothèque d'étirements n'était pas taguée (muscleTags vides), le moteur n'avait
+   donc aucun moyen de relier un étirement à la séance : il en tirait un au hasard dans
+   toute la liste. On déclare ici ce que chaque retour au calme étire, à partir de son
+   intitulé anatomique. Une liste vide = récupération respiratoire, valable après tout. */
+const __COOL_MUSCLES = {
+  /* fins de séance issues des séances kiné */
+  's0-5':[], 's2-4':['quadriceps','ischios'], 's4-4':[], 'xdual-5':[], 'xmob-5':[],
+  'xup-5':['pectoraux','epaules'],
+  'xecc-5':['quadriceps','mollets'],
+  'xcore-5':['lombaires','ischios','dorsaux'],
+  'xbrd-5':['mollets','ischios','lombaires'],
+  'xlb-15':['quadriceps','ischios','adducteurs'],
+  'xcard-3':['mollets'],
+};
+/* Bibliothèque d'étirements (ED_STRETCH) — repérée par nom, faute d'identifiants stables. */
+const __COOL_BY_NAME = [
+  [/mollet.*triceps sural|^étirement du mollet/i, ['mollets']],
+  [/soléaire/i,                                   ['mollets']],
+  [/tibial ant/i,                                 ['tibial-anterieur']],
+  [/voûte plantaire|orteils/i,                    ['mollets','tibial-anterieur']],
+  [/ischio/i,                                     ['ischios']],
+  [/psoas|fléchisseurs/i,                         ['hanches','quadriceps']],
+  [/fessier|piriforme/i,                          ['fessiers','hanches']],
+  [/quadriceps/i,                                 ['quadriceps']],
+  [/adducteurs|papillon/i,                        ['adducteurs']],
+  [/chaîne postérieure/i,                         ['ischios','lombaires','dorsaux']],
+  [/pectoraux|nuque/i,                            ['pectoraux','epaules']],
+];
+function __coolMuscles(e){
+  if(!e) return [];
+  if(e.muscleTags && e.muscleTags.length) return e.muscleTags;
+  if(__COOL_MUSCLES[e.id]) return __COOL_MUSCLES[e.id];
+  const hit=__COOL_BY_NAME.find(([re])=>re.test(e.name||''));
+  return hit?hit[1]:[];
+}
+/* Classe les retours au calme par pertinence vis-à-vis des muscles travaillés du jour.
+   À pertinence égale, la rotation par graine conserve la variété d'un jour à l'autre. */
+function __pickCooldowns(pool, blocks, seed){
+  const worked=new Set();
+  (blocks||[]).forEach(b=>(b.muscleTags||[]).forEach(m=>worked.add(m)));
+  if(!worked.size) return __rotate(pool, seed+3);
+  return __rotate(pool, seed+3).map((e,i)=>{
+    const mus=__coolMuscles(e);
+    const hits=mus.filter(m=>worked.has(m)).length;
+    /* Un étirement ciblé qui touche la séance passe devant ; la récupération respiratoire
+       (sans muscle déclaré) reste un repli honnête ; un étirement hors sujet passe dernier. */
+    const sc = hits>0 ? 100+hits*10 : (mus.length===0 ? 40 : 0);
+    return {e,sc,i};
+  }).sort((a,b)=>(b.sc-a.sc)||(a.i-b.i)).map(x=>x.e);
+}
 const __avail=(context)=>{ const { location='maison', equipment=['bodyweight'] } = context||{}; return location==='salle' ? ['bodyweight','halteres','elastiques','velo','tapis'] : (equipment.length?equipment:['bodyweight']); };
 /* ─── Suivi de charges (musculation salle) ─── */
 window.__readStrength=function(){ try{ return JSON.parse((window.localStorage&&localStorage.getItem('elan_strength'))||'{}'); }catch(e){ return {}; } };
@@ -1357,7 +1409,10 @@ window.generateProgram = function(metrics, context){
 
   /* Échauffement (zone dominante) + retour au calme (1, ou 2 si récup/mobilité) */
   const warm = (aeroMeta&&aeroMeta.warm) ? aeroMeta.warm : (__rotate(warmups.filter(w=>w.region===zoneA), seed)[0] || __rotate(warmups, seed)[0]);
-  const cools = __rotate(cooldowns, seed+3);
+  /* Le retour au calme doit étirer CE QUI VIENT D'ÊTRE TRAVAILLÉ. Il était tiré par simple
+     rotation sur toute la bibliothèque, sans lien avec la séance : on pouvait finir une
+     séance de gainage sur un étirement des pectoraux. */
+  const cools = __pickCooldowns(cooldowns, blocks, seed);
   const seq=[]; if(warm) seq.push(warm); seq.push(...blocks); if(cools[0]) seq.push(cools[0]); if(arche.gentle && cools[1]) seq.push(cools[1]);
 
   const exercises = __ordered(seq).map(ex=>window.__mapExercise(ex, diff, {tier, metrics, recentLoad}));
