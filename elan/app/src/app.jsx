@@ -213,6 +213,22 @@ function __coolMuscles(e){
   const hit=__COOL_BY_NAME.find(([re])=>re.test(e.name||''));
   return hit?hit[1]:[];
 }
+/* Choisit l'échauffement d'après les exercices RÉELLEMENT retenus, pas d'après la zone
+   déclarée de l'archétype. Le titre de la séance et son contenu peuvent diverger (le
+   remplissage puise dans tout le pool quand la zone dominante est contrainte), et on se
+   retrouvait alors à échauffer les épaules avant une séance d'équilibre et de marche. */
+function __pickWarmup(warmups, blocks, zoneA, seed){
+  if(!warmups||!warmups.length) return null;
+  const count={};
+  (blocks||[]).forEach(b=>{ const r=b.region||b.area; if(r) count[r]=(count[r]||0)+1; });
+  const zones=Object.keys(count).sort((a,b)=>count[b]-count[a]);
+  const domin=zones[0]||zoneA;                       // zone réellement dominante dans la séance
+  const rotated=__rotate(warmups, seed);
+  return rotated.find(w=>w.region===domin)
+      || rotated.find(w=>zones.indexOf(w.region)>=0)  // à défaut, une zone présente dans la séance
+      || rotated.find(w=>w.region===zoneA)
+      || rotated[0];
+}
 /* Classe les retours au calme par pertinence vis-à-vis des muscles travaillés du jour.
    À pertinence égale, la rotation par graine conserve la variété d'un jour à l'autre. */
 function __pickCooldowns(pool, blocks, seed){
@@ -916,6 +932,15 @@ window.__mapExercise = function(ex, diff, ctx){
     o.prog=flagged?'down':(min>(ex.min||10)?'up':min<(ex.min||10)?'down':'=');
     o.levelNote=level>0?('Niveau '+level+(st.note?' · '+st.note:'')):'';
   }
+  /* Plancher de récupération — 7 exercices de la bibliothèque (équilibre et proprioception
+     chronométrés) avaient rest:0, donc aucune pause : ni entre les séries, ni avant
+     l'exercice suivant. Or ce sont justement les plus coûteux nerveusement en SEP, et
+     enchaîner sans pause augmente le risque de chute. On garantit une récupération
+     minimale, allongée comme le reste par restMult les jours difficiles. */
+  if(!ex.fixedDose){                                   // les blocs marche/vélo gèrent leurs propres pauses assises
+    const MIN_REST = (o.area==='balance'||o.area==='proprioception') ? 30 : 25;
+    o.restSec=Math.max(o.restSec||0, Math.round(MIN_REST*restMult));
+  }
   o.regressed=!!flagged||tier==='low'||dropSets>0;
   if(window.__exReentry && window.__exReentry(ex.id)){ o.regressed=true; o.levelNote=(o.levelNote?o.levelNote+' · ':'')+'reprise en douceur'; }
   o.nextCue=level<window.__exMax?__nextNote(ex,level):'';
@@ -1408,7 +1433,7 @@ window.generateProgram = function(metrics, context){
   const hasDorsi = blocks.some(e=>/^dorsi/.test(e.id||''));
 
   /* Échauffement (zone dominante) + retour au calme (1, ou 2 si récup/mobilité) */
-  const warm = (aeroMeta&&aeroMeta.warm) ? aeroMeta.warm : (__rotate(warmups.filter(w=>w.region===zoneA), seed)[0] || __rotate(warmups, seed)[0]);
+  const warm = (aeroMeta&&aeroMeta.warm) ? aeroMeta.warm : __pickWarmup(warmups, blocks, zoneA, seed);
   /* Le retour au calme doit étirer CE QUI VIENT D'ÊTRE TRAVAILLÉ. Il était tiré par simple
      rotation sur toute la bibliothèque, sans lien avec la séance : on pouvait finir une
      séance de gainage sur un étirement des pectoraux. */
@@ -1879,7 +1904,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <StreakBanner/>
         <div style={{...cardBase,padding:'22px 18px',marginBottom:14}}><EnergyGauge value={metrics.energy} onChange={n=>set('energy',n)}/></div>
         <div style={{...cardBase,padding:'22px 20px',display:'flex',flexDirection:'column',gap:22,marginBottom:14}}>
-          <MetricSlider label="Fatigue" value={metrics.fatigue} color={C.orange} words={v=>v<=3?'Légère':v<=6?'Présente':'Forte'} onChange={v=>set('fatigue',v)}/>
+          <MetricSlider label="Fatigue" value={metrics.fatigue} color={C.orange} words={v=>v<=3?'Légère':v<=4?'Modérée':v<=6?'Habituelle':v<=8?'Marquée':'Forte'} onChange={v=>set('fatigue',v)}/>
           <MetricSlider label="Chaleur ressentie" value={metrics.heat} color={C.amber} words={v=>v<=3?'Fraîche':v<=6?'Tempérée':'Forte'} onChange={v=>set('heat',v)}/>
           <MetricSlider label="Qualité du sommeil" value={metrics.sleep} color={C.teal} words={v=>v<=3?'Difficile':v<=6?'Moyenne':v<=8?'Bonne':'Excellente'} onChange={v=>set('sleep',v)}/>
         </div>
@@ -1961,7 +1986,14 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{flex:1}}>
           {calibrating
             ? (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:C.tealDk,background:'rgba(47,191,161,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>Calibration {st.prevN+1}/{st.calibN}</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>On établit ta base de référence — encore {st.calibN-st.prevN-1} mesure{st.calibN-st.prevN-1>1?'s':''} pour comparer tes prochains tests.</p></>)
-            : (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:delta>=0?C.tealDk:C.amber,background:delta>=0?'rgba(47,191,161,0.12)':'rgba(224,138,11,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>{delta>=0?'+':''}{delta} ms vs ta base ({st.prevAvg})</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>{delta>=-10?'Bonne vivacité — système nerveux dispos.':'Réflexes ralentis — signe de fatigue nerveuse, je reste prudent.'}</p></>)}
+            : (<><div style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:delta>=0?C.tealDk:C.amber,background:delta>=0?'rgba(47,191,161,0.12)':'rgba(224,138,11,0.12)',borderRadius:99,padding:'3px 9px',marginBottom:6}}>{delta>=0?'+':''}{delta} ms vs ta base ({st.prevAvg})</div><p style={{fontSize:12,color:C.body,lineHeight:1.45,margin:0}}>{
+                 /* Le message doit dire la même chose que la pastille et que le curseur de
+                    fatigue qui en découle. « Bonne vivacité » sur un résultat sous la base,
+                    avec une pastille orange et une fatigue à 5/10, se contredisait. */
+                 delta>=15 ? 'Plus vif que ta base — système nerveux bien dispo.'
+               : delta>=-10 ? 'Dans ta moyenne habituelle.'
+               : delta>=-30 ? 'Un peu sous ta base — j’allège légèrement.'
+               : 'Réflexes ralentis — signe de fatigue nerveuse, je reste prudent.'}</p></>)}
         </div>
       </div>
     );
@@ -2120,7 +2152,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           </button>
           <div style={{maxHeight:adjust?220:0,overflow:'hidden',transition:'max-height 340ms cubic-bezier(.22,1,.36,1)'}}>
             <div style={{display:'flex',flexDirection:'column',gap:20,paddingTop:18}}>
-              <MetricSlider label="Fatigue (test d'éveil)" value={metrics.fatigue} color={C.orange} words={v=>v<=3?'Légère':v<=6?'Présente':'Forte'} onChange={v=>set('fatigue',v)}/>
+              <MetricSlider label="Fatigue (test d'éveil)" value={metrics.fatigue} color={C.orange} words={v=>v<=3?'Légère':v<=4?'Modérée':v<=6?'Habituelle':v<=8?'Marquée':'Forte'} onChange={v=>set('fatigue',v)}/>
               <MetricSlider label="Chaleur ressentie (météo)" value={metrics.heat} color={C.amber} words={v=>v<=3?'Fraîche':v<=6?'Tempérée':'Forte'} onChange={v=>set('heat',v)}/>
             </div>
           </div>
