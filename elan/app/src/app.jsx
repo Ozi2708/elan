@@ -739,17 +739,49 @@ window.__exportData=function(){
 window.__exportFilename=function(){ return 'elan-sauvegarde-'+window.__today()+'.json'; };
 /* Validation seule, sans rien écrire — l'app confirme avec l'utilisateur avant de toucher
    à ses données. Renvoie {ok, entries, exportedAt} ou {ok:false, error}. */
+/* Lecture TOLÉRANTE d'une sauvegarde. Entre l'export et l'import, le fichier passe par un
+   téléchargement (capricieux dans une PWA installée), une messagerie, un gestionnaire de
+   fichiers… Chacun peut ajouter un BOM, ré-encoder le contenu en chaîne, ou ne transmettre
+   que la charge utile. Refuser tout ça au prétexte que le marqueur manque, c'est perdre les
+   données pour un détail de transport. On accepte donc plusieurs formes, et quand on refuse
+   vraiment, on DIT ce qu'on a trouvé au lieu d'un « ce n'est pas une sauvegarde ». */
 window.__validateImport=function(raw){
-  let parsed;
-  try{ parsed=typeof raw==='string'?JSON.parse(raw):raw; }catch(e){ return {ok:false,error:'Fichier illisible — ce n’est pas un JSON valide.'}; }
-  if(!parsed||typeof parsed!=='object') return {ok:false,error:'Fichier vide ou inattendu.'};
-  if(parsed.app!=='elan'||!parsed.data||typeof parsed.data!=='object') return {ok:false,error:'Ce fichier n’est pas une sauvegarde Élan.'};
-  const entries=Object.keys(parsed.data).filter(k=>k.indexOf('elan_')===0);
-  if(!entries.length) return {ok:false,error:'Sauvegarde vide — aucune donnée Élan dedans.'};
+  let txt = typeof raw==='string' ? raw : null;
+  let parsed = txt===null ? raw : null;
+  if(txt!==null){
+    txt=txt.replace(/^﻿/,'').trim();                        // BOM et espaces parasites
+    if(!txt) return {ok:false,error:'Le fichier est vide.'};
+    if(txt[0]!=='{' && txt[0]!=='"' && txt[0]!=='['){
+      const cut=txt.indexOf('{');                                 // préfixe collé par un transfert
+      if(cut>0) txt=txt.slice(cut);
+    }
+    try{ parsed=JSON.parse(txt); }
+    catch(e){ return {ok:false,error:'Fichier illisible — ce n’est pas du JSON. Si tu l’as envoyé par messagerie, vérifie que c’est bien le fichier .json et non un lien ou une capture.'}; }
+    /* Certains transferts ré-encodent le JSON en une simple chaîne : on déballe. */
+    if(typeof parsed==='string'){ try{ parsed=JSON.parse(parsed); }catch(e){} }
+  }
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)) return {ok:false,error:'Contenu inattendu — ce n’est pas une sauvegarde.'};
+
+  /* Trois formes acceptées : l'enveloppe normale, une enveloppe sans marqueur `app`, ou
+     directement la table des clés elan_* si l'enveloppe a été perdue en route. */
+  let data=null, exportedAt=parsed.exportedAt||null;
+  if(parsed.data && typeof parsed.data==='object') data=parsed.data;
+  else if(Object.keys(parsed).some(k=>k.indexOf('elan_')===0)) data=parsed;
+
+  if(!data){
+    const found=Object.keys(parsed).slice(0,6).join(', ')||'aucune';
+    return {ok:false,error:'JSON valide, mais sans données Élan dedans (clés trouvées : '+found+'). Vérifie que c’est bien le fichier « elan-sauvegarde-….json » exporté depuis l’app.'};
+  }
+  const entries=Object.keys(data).filter(k=>k.indexOf('elan_')===0);
+  if(!entries.length){
+    const found=Object.keys(data).slice(0,6).join(', ')||'aucune';
+    return {ok:false,error:'Aucune clé Élan dans ce fichier (trouvé : '+found+').'};
+  }
   /* On valide tout AVANT d'écrire : un fichier à moitié corrompu ne doit jamais laisser
-     l'app dans un état bâtard. */
-  for(const k of entries){ if(typeof parsed.data[k]!=='string') return {ok:false,error:'Sauvegarde corrompue (clé « '+k+' »).'}; }
-  return {ok:true,parsed,entries,exportedAt:parsed.exportedAt||null};
+     l'app dans un état bâtard. Une valeur non-textuelle est ré-encodée plutôt que rejetée. */
+  const clean={};
+  for(const k of entries){ const v=data[k]; clean[k] = typeof v==='string' ? v : JSON.stringify(v); }
+  return {ok:true,parsed:{data:clean},entries,exportedAt};
 };
 /* Écrit réellement. `replace` : true = repart de zéro, false = fusionne (l'import gagne). */
 window.__importData=function(raw, replace){
@@ -3579,6 +3611,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
     const say=(kind,text)=>{ setMsg({kind,text}); if(kind!=='err') setTimeout(()=>setMsg(null),4200); };
     const stats=(()=>{ const d=window.__exportData(); const h=window.__sessHistory(); return {keys:d.keys, sessions:h.length}; })();
+    const [paste,setPaste]=React.useState(null);       // saisie manuelle : null = fermé
     function exportNow(){
       try{
         const blob=new Blob([JSON.stringify(window.__exportData(),null,2)],{type:'application/json'});
@@ -3587,17 +3620,46 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(()=>URL.revokeObjectURL(url),4000);
         say('ok','Sauvegarde téléchargée. Range-la ailleurs que sur ce téléphone.');
-      }catch(e){ say('err','Export impossible sur ce navigateur.'); }
+      }catch(e){ say('err','Export impossible sur ce navigateur — utilise « Partager » ou « Copier » ci-dessous.'); }
+    }
+    /* Partage direct : dans une PWA installée, le téléchargement d'un blob est souvent
+       bloqué ou illisible. Passer par le partage système (ou le presse-papier) évite
+       complètement le fichier, donc tout ce qui peut l'abîmer en route. */
+    const backupText=()=>JSON.stringify(window.__exportData());
+    async function shareNow(){
+      const txt=backupText();
+      try{
+        if(navigator.share && navigator.canShare){
+          const file=new File([txt],window.__exportFilename(),{type:'application/json'});
+          if(navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:'Sauvegarde Élan'}); return; }
+        }
+        if(navigator.share){ await navigator.share({title:'Sauvegarde Élan',text:txt}); return; }
+        throw new Error('no share');
+      }catch(e){
+        if(e && e.name==='AbortError') return;                 // partage annulé : rien à signaler
+        try{ await navigator.clipboard.writeText(txt); say('ok','Sauvegarde copiée dans le presse-papier — colle-la où tu veux (mail, note, message).'); }
+        catch(e2){ say('err','Partage et copie indisponibles ici. Utilise « Exporter » pour obtenir le fichier.'); }
+      }
+    }
+    async function copyNow(){
+      try{ await navigator.clipboard.writeText(backupText()); say('ok','Sauvegarde copiée. Envoie-la-toi par mail ou message, puis colle-la sur l’autre téléphone.'); }
+      catch(e){ say('err','Copie refusée par le navigateur — utilise « Partager » ou « Exporter ».'); }
     }
     function pickFile(e){
-      const f=e.target.files&&e.target.files[0]; e.target.value='';
-      if(!f) return;
+      const f=e.target.files&&e.target.files[0];
+      if(!f){ e.target.value=''; return; }
       const rd=new FileReader();
-      rd.onload=()=>{ const v=window.__validateImport(rd.result);
+      rd.onload=()=>{ e.target.value='';                        // on vide APRÈS lecture, jamais avant
+        const v=window.__validateImport(rd.result);
         if(!v.ok){ say('err',v.error); return; }
-        setMsg(null); setPending({raw:rd.result,at:v.exportedAt,n:v.entries.length}); };
-      rd.onerror=()=>say('err','Lecture du fichier impossible.');
+        setMsg(null); setPaste(null); setPending({raw:rd.result,at:v.exportedAt,n:v.entries.length}); };
+      rd.onerror=()=>{ e.target.value=''; say('err','Lecture du fichier impossible.'); };
       rd.readAsText(f);
+    }
+    function usePaste(){
+      const v=window.__validateImport(paste||'');
+      if(!v.ok){ say('err',v.error); return; }
+      setMsg(null); setPending({raw:paste,at:v.exportedAt,n:v.entries.length});
     }
     function doImport(replace){
       const r=window.__importData(pending.raw,replace);
@@ -3617,11 +3679,38 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Exporter ma sauvegarde
         </button>
-        <button onClick={()=>fileRef.current&&fileRef.current.click()} style={{width:'100%',minHeight:46,marginTop:10,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9}}>
+        {/* Voies sans fichier : dans une PWA installée, le téléchargement d'un blob est
+            souvent bloqué ou arrive abîmé. Le partage système et le presse-papier
+            contournent complètement le problème. */}
+        <div style={{display:'flex',gap:9,marginTop:9}}>
+          <button onClick={shareNow} style={{flex:1,minHeight:46,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/></svg>
+            Partager
+          </button>
+          <button onClick={copyNow} style={{flex:1,minHeight:46,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            Copier
+          </button>
+        </div>
+
+        <div style={{height:1,background:C.line,margin:'16px 0 14px'}}/>
+        <div style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:10}}>Restaurer</div>
+        <button onClick={()=>fileRef.current&&fileRef.current.click()} style={{width:'100%',minHeight:46,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9}}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          Restaurer une sauvegarde
+          Depuis un fichier
         </button>
-        <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{display:'none'}}/>
+        <button onClick={()=>setPaste(p=>p===null?'':null)} style={{width:'100%',minHeight:46,marginTop:9,borderRadius:13,background:C.bg,border:`1px solid ${C.line2}`,cursor:'pointer',color:C.tealDk,fontSize:13.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9}}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="8" y="4" width="12" height="16" rx="2"/><path d="M16 4V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v1"/><path d="M4 8v12a2 2 0 0 0 2 2h8"/></svg>
+          {paste===null?'En collant le texte':'Fermer le collage'}
+        </button>
+        {paste!==null && (
+          <div style={{marginTop:10}}>
+            <textarea value={paste} onChange={e=>setPaste(e.target.value)} rows={4} placeholder="Colle ici le texte de ta sauvegarde (il commence par {&quot;app&quot;:&quot;elan&quot;…)"
+              style={{width:'100%',boxSizing:'border-box',border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontFamily:"'DM Mono',monospace",fontSize:11.5,color:C.ink,background:C.bg,outline:'none',resize:'vertical',lineHeight:1.45}}/>
+            <button onClick={usePaste} disabled={!paste.trim()} style={{width:'100%',minHeight:44,marginTop:9,borderRadius:12,background:paste.trim()?`linear-gradient(135deg,${C.teal},${C.tealDk})`:C.bg,border:paste.trim()?'none':`1px solid ${C.line}`,cursor:paste.trim()?'pointer':'default',color:paste.trim()?'#fff':C.faint,fontSize:14,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>Lire cette sauvegarde</button>
+          </div>
+        )}
+        <input ref={fileRef} type="file" accept="*/*" onChange={pickFile} style={{display:'none'}}/>
         {pending && (
           <div style={{marginTop:14,background:C.tint,border:'1px solid rgba(47,191,161,0.3)',borderRadius:13,padding:'13px 14px'}}>
             <div style={{fontSize:13,fontWeight:600,color:C.ink,marginBottom:4}}>Sauvegarde reconnue</div>
