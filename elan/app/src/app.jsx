@@ -745,6 +745,18 @@ window.__exportFilename=function(){ return 'elan-sauvegarde-'+window.__today()+'
    que la charge utile. Refuser tout ça au prétexte que le marqueur manque, c'est perdre les
    données pour un détail de transport. On accepte donc plusieurs formes, et quand on refuse
    vraiment, on DIT ce qu'on a trouvé au lieu d'un « ce n'est pas une sauvegarde ». */
+/* Heuristique grossière mais suffisante : un JSON valide se termine par `}` ou `]`
+   (aux espaces près). S'il s'arrête ailleurs — au milieu d'une chaîne, sur une virgule,
+   sur un antislash d'échappement — ou si les accolades/crochets ne sont pas équilibrés,
+   c'est presque toujours une coupure en cours de route, pas une faute de syntaxe. */
+window.__looksTruncated=function(txt){
+  const t=String(txt||'').trimEnd();
+  if(t.length<20) return false;
+  const last=t[t.length-1];
+  if(last==='}'||last===']') return false;
+  const opens=(t.match(/[{[]/g)||[]).length, closes=(t.match(/[}\]]/g)||[]).length;
+  return opens>closes || /[,:"\\]$/.test(last);
+};
 window.__validateImport=function(raw){
   let txt = typeof raw==='string' ? raw : null;
   let parsed = txt===null ? raw : null;
@@ -756,7 +768,16 @@ window.__validateImport=function(raw){
       if(cut>0) txt=txt.slice(cut);
     }
     try{ parsed=JSON.parse(txt); }
-    catch(e){ return {ok:false,error:'Fichier illisible — ce n’est pas du JSON. Si tu l’as envoyé par messagerie, vérifie que c’est bien le fichier .json et non un lien ou une capture.'}; }
+    catch(e){
+      /* Un collage tronqué est l'échec le plus fréquent : de nombreux claviers Android
+         (Gboard, presse-papier Samsung) ne conservent qu'un APERÇU tronqué du texte copié
+         pour leur suggestion rapide, et coller depuis cette suggestion n'insère que ce
+         fragment — pas le contenu complet du presse-papier. Le symptôme est un texte qui
+         s'arrête net, jamais sur une accolade fermante. On le détecte et on le nomme,
+         plutôt que de renvoyer un « JSON invalide » qui n'oriente vers rien. */
+      if(window.__looksTruncated(txt)) return {ok:false,error:'Le texte collé s’arrête avant la fin (il ne se termine pas par une accolade) — souvent le clavier (Gboard ou presse-papier Samsung) qui ne garde qu’un aperçu tronqué du texte copié. Recopie en faisant un appui long sur le champ puis « Coller », pas depuis la suggestion du clavier — ou utilise « Partager » à la place, qui évite le presse-papier.'};
+      return {ok:false,error:'Fichier illisible — ce n’est pas du JSON. Si tu l’as envoyé par messagerie, vérifie que c’est bien le fichier .json et non un lien ou une capture.'};
+    }
     /* Certains transferts ré-encodent le JSON en une simple chaîne : on déballe. */
     if(typeof parsed==='string'){ try{ parsed=JSON.parse(parsed); }catch(e){} }
   }
@@ -3610,7 +3631,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
     const fileRef=React.useRef(null);
     const card={background:C.card,border:`1px solid ${C.line}`,borderRadius:16,boxShadow:C.sh,padding:'16px'};
     const say=(kind,text)=>{ setMsg({kind,text}); if(kind!=='err') setTimeout(()=>setMsg(null),4200); };
-    const stats=(()=>{ const d=window.__exportData(); const h=window.__sessHistory(); return {keys:d.keys, sessions:h.length}; })();
+    const stats=(()=>{ const d=window.__exportData(); const h=window.__sessHistory(); return {keys:d.keys, sessions:h.length, chars:JSON.stringify(d).length}; })();
     const [paste,setPaste]=React.useState(null);       // saisie manuelle : null = fermé
     function exportNow(){
       try{
@@ -3637,12 +3658,16 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         throw new Error('no share');
       }catch(e){
         if(e && e.name==='AbortError') return;                 // partage annulé : rien à signaler
-        try{ await navigator.clipboard.writeText(txt); say('ok','Sauvegarde copiée dans le presse-papier — colle-la où tu veux (mail, note, message).'); }
+        try{ await navigator.clipboard.writeText(txt); say('ok','Sauvegarde copiée dans le presse-papier — colle-la avec un appui long > Coller (pas depuis la suggestion du clavier, souvent tronquée).'); }
         catch(e2){ say('err','Partage et copie indisponibles ici. Utilise « Exporter » pour obtenir le fichier.'); }
       }
     }
+    /* « Partager » (share sheet) livre le texte en entier, sans passer par le presse-papier :
+       préférable dès qu'il est disponible. « Copier » reste utile en repli, mais le presse-papier
+       de certains claviers Android (Gboard, Samsung) ne garde qu'un APERÇU tronqué pour sa
+       suggestion rapide — un appui long > Coller récupère le vrai contenu complet. */
     async function copyNow(){
-      try{ await navigator.clipboard.writeText(backupText()); say('ok','Sauvegarde copiée. Envoie-la-toi par mail ou message, puis colle-la sur l’autre téléphone.'); }
+      try{ await navigator.clipboard.writeText(backupText()); say('ok','Sauvegarde copiée. Pour la coller : appui long sur le champ > Coller (pas la suggestion du clavier, souvent tronquée).'); }
       catch(e){ say('err','Copie refusée par le navigateur — utilise « Partager » ou « Exporter ».'); }
     }
     function pickFile(e){
@@ -3673,7 +3698,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
         <div style={{fontSize:13,color:C.body,lineHeight:1.5,marginBottom:14}}>Tes données ne quittent jamais cet appareil — donc rien ne les protège si tu vides le cache, changes de téléphone ou réinstalles. Exporte une sauvegarde de temps en temps.</div>
         <div style={{display:'flex',alignItems:'center',gap:10,background:C.bg,border:`1px solid ${C.line}`,borderRadius:12,padding:'10px 12px',marginBottom:14}}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>
-          <span style={{fontSize:12.5,color:C.body}}><b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.sessions}</b> séances · <b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.keys}</b> jeux de données</span>
+          <span style={{fontSize:12.5,color:C.body}}><b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.sessions}</b> séances · <b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.keys}</b> jeux de données · <b style={{fontFamily:"'DM Mono',monospace",color:C.ink}}>{stats.chars.toLocaleString('fr-FR')}</b> caractères</span>
         </div>
         <button onClick={exportNow} style={{width:'100%',minHeight:48,borderRadius:13,background:`linear-gradient(135deg,${C.teal},${C.tealDk})`,border:'none',cursor:'pointer',color:'#fff',fontSize:14.5,fontWeight:600,fontFamily:"'DM Sans',sans-serif",display:'flex',alignItems:'center',justifyContent:'center',gap:9,boxShadow:'0 6px 18px rgba(47,191,161,0.3)'}}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -3703,13 +3728,20 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="8" y="4" width="12" height="16" rx="2"/><path d="M16 4V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v1"/><path d="M4 8v12a2 2 0 0 0 2 2h8"/></svg>
           {paste===null?'En collant le texte':'Fermer le collage'}
         </button>
-        {paste!==null && (
+        {paste!==null && (()=>{ const trunc=paste.length>0 && window.__looksTruncated(paste); return (
           <div style={{marginTop:10}}>
+            <p style={{fontSize:11.5,color:C.muted,lineHeight:1.4,marginBottom:8}}>Appui long sur le champ ci-dessous puis <b>Coller</b> — pas depuis une suggestion du clavier, elle ne garde souvent qu’un extrait tronqué.</p>
             <textarea value={paste} onChange={e=>setPaste(e.target.value)} rows={4} placeholder="Colle ici le texte de ta sauvegarde (il commence par {&quot;app&quot;:&quot;elan&quot;…)"
-              style={{width:'100%',boxSizing:'border-box',border:`1px solid ${C.line}`,borderRadius:12,padding:'11px 13px',fontFamily:"'DM Mono',monospace",fontSize:11.5,color:C.ink,background:C.bg,outline:'none',resize:'vertical',lineHeight:1.45}}/>
+              style={{width:'100%',boxSizing:'border-box',border:`1px solid ${trunc?'#E0940B':C.line}`,borderRadius:12,padding:'11px 13px',fontFamily:"'DM Mono',monospace",fontSize:11.5,color:C.ink,background:C.bg,outline:'none',resize:'vertical',lineHeight:1.45}}/>
+            {paste.length>0 && (
+              <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6}}>
+                <span style={{fontSize:11,color:trunc?'#9A5B12':C.muted}}>{paste.length.toLocaleString('fr-FR')} caractère{paste.length>1?'s':''} collé{paste.length>1?'s':''}</span>
+                {trunc && <span style={{fontSize:11,color:'#9A5B12',fontWeight:600}}>— ça s’arrête brutalement, probablement tronqué</span>}
+              </div>
+            )}
             <button onClick={usePaste} disabled={!paste.trim()} style={{width:'100%',minHeight:44,marginTop:9,borderRadius:12,background:paste.trim()?`linear-gradient(135deg,${C.teal},${C.tealDk})`:C.bg,border:paste.trim()?'none':`1px solid ${C.line}`,cursor:paste.trim()?'pointer':'default',color:paste.trim()?'#fff':C.faint,fontSize:14,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>Lire cette sauvegarde</button>
           </div>
-        )}
+        );})()}
         <input ref={fileRef} type="file" accept="*/*" onChange={pickFile} style={{display:'none'}}/>
         {pending && (
           <div style={{marginTop:14,background:C.tint,border:'1px solid rgba(47,191,161,0.3)',borderRadius:13,padding:'13px 14px'}}>
