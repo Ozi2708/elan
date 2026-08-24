@@ -3647,18 +3647,34 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
        bloqué ou illisible. Passer par le partage système (ou le presse-papier) évite
        complètement le fichier, donc tout ce qui peut l'abîmer en route. */
     const backupText=()=>JSON.stringify(window.__exportData());
+    /* Préfixe explicatif : sans lui, un partage en texte brut dépose un pavé de JSON tel
+       quel dans la messagerie ou les notes, illisible et anxiogène. Le préfixe le rend
+       compréhensible pour qui le reçoit (toi, plus tard) — et il ne gêne pas la lecture :
+       __validateImport coupe tout ce qui précède la première accolade. */
+    const withHeader=txt=>'Sauvegarde Élan — colle ce texte EN ENTIER dans l’app (Progrès > réglages ⚙ > Sauvegarde > « En collant le texte ») pour restaurer tes données.\n\n'+txt;
     async function shareNow(){
       const txt=backupText();
       try{
         if(navigator.share && navigator.canShare){
-          const file=new File([txt],window.__exportFilename(),{type:'application/json'});
-          if(navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:'Sauvegarde Élan'}); return; }
+          /* Le partage de FICHIER échoue silencieusement sur beaucoup de navigateurs
+             Android pour un MIME peu courant comme application/json — text/plain, lui,
+             est presque toujours accepté. On tente les deux avant de renoncer au fichier. */
+          for(const [name,type] of [[window.__exportFilename(),'application/json'],[window.__exportFilename().replace(/\.json$/,'.txt'),'text/plain']]){
+            try{
+              const file=new File([txt],name,{type});
+              if(navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:'Sauvegarde Élan'}); say('ok','Sauvegarde partagée en fichier — restaure-la avec « Depuis un fichier » sur l’autre téléphone.'); return; }
+            }catch(eFile){ if(eFile && eFile.name==='AbortError') return; }
+          }
         }
-        if(navigator.share){ await navigator.share({title:'Sauvegarde Élan',text:txt}); return; }
+        if(navigator.share){
+          await navigator.share({title:'Sauvegarde Élan',text:withHeader(txt)});
+          say('ok','Ton navigateur ne partage pas de fichier ici, seulement du texte — c’est normal, ce n’est pas une erreur. Sur l’autre téléphone, colle-le EN ENTIER avec « En collant le texte ».');
+          return;
+        }
         throw new Error('no share');
       }catch(e){
         if(e && e.name==='AbortError') return;                 // partage annulé : rien à signaler
-        try{ await navigator.clipboard.writeText(txt); say('ok','Sauvegarde copiée dans le presse-papier — colle-la avec un appui long > Coller (pas depuis la suggestion du clavier, souvent tronquée).'); }
+        try{ await navigator.clipboard.writeText(withHeader(txt)); say('ok','Partage indisponible ici — sauvegarde copiée dans le presse-papier. Colle-la avec un appui long > Coller (pas depuis la suggestion du clavier, souvent tronquée).'); }
         catch(e2){ say('err','Partage et copie indisponibles ici. Utilise « Exporter » pour obtenir le fichier.'); }
       }
     }
@@ -3667,7 +3683,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
        de certains claviers Android (Gboard, Samsung) ne garde qu'un APERÇU tronqué pour sa
        suggestion rapide — un appui long > Coller récupère le vrai contenu complet. */
     async function copyNow(){
-      try{ await navigator.clipboard.writeText(backupText()); say('ok','Sauvegarde copiée. Pour la coller : appui long sur le champ > Coller (pas la suggestion du clavier, souvent tronquée).'); }
+      try{ await navigator.clipboard.writeText(withHeader(backupText())); say('ok','Sauvegarde copiée. Pour la coller : appui long sur le champ > Coller (pas la suggestion du clavier, souvent tronquée).'); }
       catch(e){ say('err','Copie refusée par le navigateur — utilise « Partager » ou « Exporter ».'); }
     }
     function pickFile(e){
