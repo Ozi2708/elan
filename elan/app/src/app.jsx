@@ -737,8 +737,48 @@ window.__exportData=function(){
   return { app:'elan', version:1, exportedAt:new Date().toISOString(), keys:Object.keys(data).length, data };
 };
 window.__exportFilename=function(){ return 'elan-sauvegarde-'+window.__today()+'.json'; };
+
+/* ─── Compression du texte à coller ─────────────────────────────────────────────
+   Un export complet peut atteindre plusieurs dizaines de Ko de JSON : illisible et
+   pénible à manipuler à la main sur un téléphone (sélection, défilement, presse-papier
+   qui tronque). gzip réduit un JSON de ce type d'environ 70-80 %, et le résultat en
+   base64 — uniquement A-Z a-z 0-9 + / = — ne contient ni guillemet ni accent, donc rien
+   qu'un clavier ou une messagerie puisse « corriger » silencieusement. Seul le texte
+   destiné à être copié/collé à la main passe par ici ; le fichier exporté reste en JSON
+   clair, plus simple à inspecter. Non disponible = navigateur trop ancien : on retombe
+   sur le JSON brut, plus long mais toujours fonctionnel. */
+window.__ELAN_GZ_MARK='ELANGZ1:';
+window.__gzipBase64=async function(str){
+  if(!window.CompressionStream) return null;
+  try{
+    const stream=new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+    const buf=await new Response(stream).arrayBuffer();
+    const bytes=new Uint8Array(buf);
+    let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }catch(e){ return null; }
+};
+window.__gunzipBase64=async function(b64){
+  if(!window.DecompressionStream) throw new Error('decompression non supportée');
+  const clean=b64.replace(/\s+/g,'');                       // un clavier peut insérer des sauts de ligne en pliant le texte
+  const bin=atob(clean);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
+};
+/* Texte prêt à coller/partager : préambule court en clair + charge compressée si possible. */
+window.__pasteableBackup=async function(){
+  const raw=JSON.stringify(window.__exportData());
+  const gz=await window.__gzipBase64(raw);
+  const head='Sauvegarde Elan (colle ce texte entier dans l’app > Restaurer > Coller)\n\n';
+  return gz ? {text:head+window.__ELAN_GZ_MARK+gz, raw, compressed:true}
+            : {text:head+raw, raw, compressed:false};
+};
+
 /* Validation seule, sans rien écrire — l'app confirme avec l'utilisateur avant de toucher
-   à ses données. Renvoie {ok, entries, exportedAt} ou {ok:false, error}. */
+   à ses données. Renvoie {ok, entries, exportedAt} ou {ok:false, error}. Asynchrone : une
+   sauvegarde compressée doit d'abord être décompressée. */
 /* Lecture TOLÉRANTE d'une sauvegarde. Entre l'export et l'import, le fichier passe par un
    téléchargement (capricieux dans une PWA installée), une messagerie, un gestionnaire de
    fichiers… Chacun peut ajouter un BOM, ré-encoder le contenu en chaîne, ou ne transmettre
@@ -757,12 +797,19 @@ window.__looksTruncated=function(txt){
   const opens=(t.match(/[{[]/g)||[]).length, closes=(t.match(/[}\]]/g)||[]).length;
   return opens>closes || /[,:"\\]$/.test(last);
 };
-window.__validateImport=function(raw){
+window.__validateImport=async function(raw){
   let txt = typeof raw==='string' ? raw : null;
   let parsed = txt===null ? raw : null;
   if(txt!==null){
     txt=txt.replace(/^﻿/,'').trim();                        // BOM et espaces parasites
     if(!txt) return {ok:false,error:'Le fichier est vide.'};
+    /* Charge compressée : le marqueur peut être précédé du préambule explicatif, donc on
+       le cherche n'importe où plutôt qu'en tête stricte. */
+    const gzAt=txt.indexOf(window.__ELAN_GZ_MARK);
+    if(gzAt>=0){
+      try{ txt=await window.__gunzipBase64(txt.slice(gzAt+window.__ELAN_GZ_MARK.length)); }
+      catch(e){ return {ok:false,error:'Ce texte compressé est illisible — presque toujours un collage incomplet (le texte a été coupé). Recopie-le en entier avec un appui long > Coller, ou utilise « Depuis un fichier ».'}; }
+    }
     if(txt[0]!=='{' && txt[0]!=='"' && txt[0]!=='['){
       const cut=txt.indexOf('{');                                 // préfixe collé par un transfert
       if(cut>0) txt=txt.slice(cut);
@@ -805,8 +852,8 @@ window.__validateImport=function(raw){
   return {ok:true,parsed:{data:clean},entries,exportedAt};
 };
 /* Écrit réellement. `replace` : true = repart de zéro, false = fusionne (l'import gagne). */
-window.__importData=function(raw, replace){
-  const v=window.__validateImport(raw);
+window.__importData=async function(raw, replace){
+  const v=await window.__validateImport(raw);
   if(!v.ok) return v;
   try{
     if(replace) window.__resetAllData();
@@ -3647,18 +3694,16 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
        bloqué ou illisible. Passer par le partage système (ou le presse-papier) évite
        complètement le fichier, donc tout ce qui peut l'abîmer en route. */
     const backupText=()=>JSON.stringify(window.__exportData());
-    /* Préfixe explicatif : sans lui, un partage en texte brut dépose un pavé de JSON tel
-       quel dans la messagerie ou les notes, illisible et anxiogène. Le préfixe le rend
-       compréhensible pour qui le reçoit (toi, plus tard) — et il ne gêne pas la lecture :
-       __validateImport coupe tout ce qui précède la première accolade. */
-    const withHeader=txt=>'Sauvegarde Élan — colle ce texte EN ENTIER dans l’app (Progrès > réglages ⚙ > Sauvegarde > « En collant le texte ») pour restaurer tes données.\n\n'+txt;
+    const pctSmaller=(raw,text)=>Math.round((1-text.length/raw.length)*100);
     async function shareNow(){
       const txt=backupText();
       try{
         if(navigator.share && navigator.canShare){
           /* Le partage de FICHIER échoue silencieusement sur beaucoup de navigateurs
              Android pour un MIME peu courant comme application/json — text/plain, lui,
-             est presque toujours accepté. On tente les deux avant de renoncer au fichier. */
+             est presque toujours accepté. On tente les deux avant de renoncer au fichier.
+             Ici la taille n'est pas le problème (un fichier ne se retape pas à la main) :
+             on garde le JSON en clair, plus simple à inspecter au besoin. */
           for(const [name,type] of [[window.__exportFilename(),'application/json'],[window.__exportFilename().replace(/\.json$/,'.txt'),'text/plain']]){
             try{
               const file=new File([txt],name,{type});
@@ -3666,44 +3711,73 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             }catch(eFile){ if(eFile && eFile.name==='AbortError') return; }
           }
         }
+        /* Aucun partage de fichier possible : ne reste que le texte, donc la compression
+           compte enfin — c'est justement ce que la personne va devoir manipuler à la main. */
+        const pb=await window.__pasteableBackup();
         if(navigator.share){
-          await navigator.share({title:'Sauvegarde Élan',text:withHeader(txt)});
-          say('ok','Ton navigateur ne partage pas de fichier ici, seulement du texte — c’est normal, ce n’est pas une erreur. Sur l’autre téléphone, colle-le EN ENTIER avec « En collant le texte ».');
+          await navigator.share({title:'Sauvegarde Élan',text:pb.text});
+          say('ok',pb.compressed
+            ? `Sauvegarde partagée en texte compressé (${pctSmaller(pb.raw,pb.text)}% plus court) — normal, ton navigateur ne partage pas de fichier ici. Colle-le EN ENTIER sur l’autre téléphone avec « En collant le texte ».`
+            : 'Sauvegarde partagée en texte — normal, ton navigateur ne partage pas de fichier ici. Colle-le EN ENTIER sur l’autre téléphone avec « En collant le texte ».');
           return;
         }
         throw new Error('no share');
       }catch(e){
         if(e && e.name==='AbortError') return;                 // partage annulé : rien à signaler
-        try{ await navigator.clipboard.writeText(withHeader(txt)); say('ok','Partage indisponible ici — sauvegarde copiée dans le presse-papier. Colle-la avec un appui long > Coller (pas depuis la suggestion du clavier, souvent tronquée).'); }
-        catch(e2){ say('err','Partage et copie indisponibles ici. Utilise « Exporter » pour obtenir le fichier.'); }
+        try{
+          const pb=await window.__pasteableBackup();
+          await navigator.clipboard.writeText(pb.text);
+          say('ok','Partage indisponible ici — sauvegarde copiée dans le presse-papier. Colle-la avec un appui long > Coller (pas depuis la suggestion du clavier, souvent tronquée).');
+        }catch(e2){ say('err','Partage et copie indisponibles ici. Utilise « Exporter » ou « Ouvrir en texte » ci-dessous.'); }
       }
     }
     /* « Partager » (share sheet) livre le texte en entier, sans passer par le presse-papier :
        préférable dès qu'il est disponible. « Copier » reste utile en repli, mais le presse-papier
        de certains claviers Android (Gboard, Samsung) ne garde qu'un APERÇU tronqué pour sa
-       suggestion rapide — un appui long > Coller récupère le vrai contenu complet. */
+       suggestion rapide — un appui long > Coller récupère le vrai contenu complet. Les deux
+       utilisent la forme COMPRESSÉE : c'est exactement le texte qu'il faudra manipuler à la
+       main, donc le plus court possible et sans guillemet ni accent qu'un clavier corrompt. */
     async function copyNow(){
-      try{ await navigator.clipboard.writeText(withHeader(backupText())); say('ok','Sauvegarde copiée. Pour la coller : appui long sur le champ > Coller (pas la suggestion du clavier, souvent tronquée).'); }
-      catch(e){ say('err','Copie refusée par le navigateur — utilise « Partager » ou « Exporter ».'); }
+      try{
+        const pb=await window.__pasteableBackup();
+        await navigator.clipboard.writeText(pb.text);
+        say('ok', pb.compressed
+          ? `Sauvegarde copiée, compressée (${pctSmaller(pb.raw,pb.text)}% plus courte que le JSON brut). Pour la coller : appui long > Coller (pas la suggestion du clavier).`
+          : 'Sauvegarde copiée. Pour la coller : appui long sur le champ > Coller (pas la suggestion du clavier, souvent tronquée).');
+      }catch(e){ say('err','Copie refusée par le navigateur — utilise « Partager » ou « Exporter ».'); }
     }
-    function pickFile(e){
+    /* Repli qui ne dépend ni du téléchargement (souvent bloqué en PWA installée) ni du
+       partage : ouvre le contenu dans un nouvel onglet du navigateur, où le menu natif (⋮)
+       propose presque toujours « Enregistrer » ou « Partager » — un chemin que l'app elle-même
+       ne peut pas casser, puisque c'est le navigateur qui prend le relais. */
+    function openInTab(){
+      try{
+        const blob=new Blob([JSON.stringify(window.__exportData(),null,2)],{type:'text/plain'});
+        const url=URL.createObjectURL(blob);
+        const w=window.open(url,'_blank');
+        if(!w) throw new Error('popup bloquée');
+        setTimeout(()=>URL.revokeObjectURL(url),60000);
+        say('ok','Sauvegarde ouverte dans un nouvel onglet — utilise le menu ⋮ de ton navigateur (Enregistrer / Partager) depuis là.');
+      }catch(e){ say('err','Ton navigateur bloque l’ouverture d’un nouvel onglet ici — autorise les fenêtres pop-up pour ce site, ou utilise « Partager ».'); }
+    }
+    async function pickFile(e){
       const f=e.target.files&&e.target.files[0];
       if(!f){ e.target.value=''; return; }
       const rd=new FileReader();
-      rd.onload=()=>{ e.target.value='';                        // on vide APRÈS lecture, jamais avant
-        const v=window.__validateImport(rd.result);
+      rd.onload=async()=>{ e.target.value='';                  // on vide APRÈS lecture, jamais avant
+        const v=await window.__validateImport(rd.result);
         if(!v.ok){ say('err',v.error); return; }
         setMsg(null); setPaste(null); setPending({raw:rd.result,at:v.exportedAt,n:v.entries.length}); };
       rd.onerror=()=>{ e.target.value=''; say('err','Lecture du fichier impossible.'); };
       rd.readAsText(f);
     }
-    function usePaste(){
-      const v=window.__validateImport(paste||'');
+    async function usePaste(){
+      const v=await window.__validateImport(paste||'');
       if(!v.ok){ say('err',v.error); return; }
       setMsg(null); setPending({raw:paste,at:v.exportedAt,n:v.entries.length});
     }
-    function doImport(replace){
-      const r=window.__importData(pending.raw,replace);
+    async function doImport(replace){
+      const r=await window.__importData(pending.raw,replace);
       setPending(null);
       if(!r.ok){ say('err',r.error); return; }
       say('ok',`${r.keys} éléments restaurés. Rechargement…`);
@@ -3733,6 +3807,7 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
             Copier
           </button>
         </div>
+        <button onClick={openInTab} style={{display:'block',margin:'9px auto 0',background:'none',border:'none',color:C.muted,fontSize:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",textDecoration:'underline'}}>Ouvrir en texte dans un nouvel onglet</button>
 
         <div style={{height:1,background:C.line,margin:'16px 0 14px'}}/>
         <div style={{fontSize:11,color:C.muted,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:10}}>Restaurer</div>
@@ -3744,14 +3819,20 @@ Object.assign(window.EC,{ Btn, EnergyGauge, MetricSlider, LineChart, RingChart, 
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.tealDk} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="8" y="4" width="12" height="16" rx="2"/><path d="M16 4V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v1"/><path d="M4 8v12a2 2 0 0 0 2 2h8"/></svg>
           {paste===null?'En collant le texte':'Fermer le collage'}
         </button>
-        {paste!==null && (()=>{ const trunc=paste.length>0 && window.__looksTruncated(paste); return (
+        {paste!==null && (()=>{
+          /* Le repère de troncature (accolade finale) ne vaut que pour du JSON en clair :
+             un texte compressé se termine en base64, sans forme reconnaissable. On ne
+             l'affiche donc que quand le marqueur de compression est absent. */
+          const compressed=paste.indexOf(window.__ELAN_GZ_MARK)>=0;
+          const trunc=!compressed && paste.length>0 && window.__looksTruncated(paste);
+          return (
           <div style={{marginTop:10}}>
             <p style={{fontSize:11.5,color:C.muted,lineHeight:1.4,marginBottom:8}}>Appui long sur le champ ci-dessous puis <b>Coller</b> — pas depuis une suggestion du clavier, elle ne garde souvent qu’un extrait tronqué.</p>
             <textarea value={paste} onChange={e=>setPaste(e.target.value)} rows={4} placeholder="Colle ici le texte de ta sauvegarde (il commence par {&quot;app&quot;:&quot;elan&quot;…)"
               style={{width:'100%',boxSizing:'border-box',border:`1px solid ${trunc?'#E0940B':C.line}`,borderRadius:12,padding:'11px 13px',fontFamily:"'DM Mono',monospace",fontSize:11.5,color:C.ink,background:C.bg,outline:'none',resize:'vertical',lineHeight:1.45}}/>
             {paste.length>0 && (
               <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6}}>
-                <span style={{fontSize:11,color:trunc?'#9A5B12':C.muted}}>{paste.length.toLocaleString('fr-FR')} caractère{paste.length>1?'s':''} collé{paste.length>1?'s':''}</span>
+                <span style={{fontSize:11,color:trunc?'#9A5B12':C.muted}}>{paste.length.toLocaleString('fr-FR')} caractère{paste.length>1?'s':''} collé{paste.length>1?'s':''}{compressed?' · compressé':''}</span>
                 {trunc && <span style={{fontSize:11,color:'#9A5B12',fontWeight:600}}>— ça s’arrête brutalement, probablement tronqué</span>}
               </div>
             )}
